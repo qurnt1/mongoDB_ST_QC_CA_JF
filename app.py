@@ -1937,11 +1937,14 @@ def render_partie_2_migration(tab) -> None:
 # =====================================================================
 # REQUETES MONGODB (PARTIE 3)
 # =====================================================================
+# =====================================================================
+# REQUETES MONGODB (PARTIE 3)
+# =====================================================================
 
 def query_A_mongo(db) -> pd.DataFrame:
     """
     Requête A (MongoDB).
-    SQL : nom_ligne, moyenne_retard_minutes
+    SQL: nom_ligne, moyenne_retard_minutes
     """
     pipeline = [
         {"$unwind": "$trafic"},
@@ -1949,82 +1952,26 @@ def query_A_mongo(db) -> pd.DataFrame:
         {
             "$group": {
                 "_id": "$nom_ligne",
-                "moyenne_retard_minutes": {
-                    "$avg": "$trafic.retard_minutes",
-                },
+                "moyenne_retard_minutes": {"$avg": "$trafic.retard_minutes"},
             },
         },
         {"$sort": {"moyenne_retard_minutes": -1}},
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": "$_id",  # Colonne 1
-                "moyenne_retard_minutes": 1,  # Colonne 2
+                "nom_ligne": "$_id",
+                "moyenne_retard_minutes": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
-
-
-def query_B_mongo(db) -> pd.DataFrame:
-    """
-    Requête B (MongoDB).
-    SQL : nom_ligne, moyenne_passagers_par_jour
-    """
-    pipeline = [
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-        {
-            "$match": {
-                "arrets.horaires.passagers_estimes": {"$ne": None},
-                "arrets.horaires.heure_prevue": {"$ne": None},
-            },
-        },
-        {
-            "$addFields": {
-                "jour": {
-                    "$dateToString": {
-                        "format": "%Y-%m-%d",
-                        "date": "$arrets.horaires.heure_prevue",
-                    },
-                },
-            },
-        },
-        {
-            "$group": {
-                "_id": {
-                    "nom_ligne": "$nom_ligne",
-                    "jour": "$jour",
-                },
-                "total_passagers_jour": {
-                    "$sum": "$arrets.horaires.passagers_estimes",
-                },
-            },
-        },
-        {
-            "$group": {
-                "_id": "$_id.nom_ligne",
-                "moyenne_passagers_par_jour": {
-                    "$avg": "$total_passagers_jour",
-                },
-            },
-        },
-        {"$sort": {"moyenne_passagers_par_jour": -1}},
-        {
-            "$project": {
-                "_id": 0,
-                "nom_ligne": "$_id",  # Colonne 1
-                "moyenne_passagers_par_jour": 1,  # Colonne 2
-            },
-        },
-    ]
-    return aggregate_to_df(db.lignes, pipeline)
-
+    df = aggregate_to_df(db.lignes, pipeline)
+    # Force l'ordre des colonnes
+    return df[["nom_ligne", "moyenne_retard_minutes"]] if not df.empty else df
 
 def query_C_mongo(db) -> pd.DataFrame:
     """
     Requête C (MongoDB).
-    SQL : nom_ligne, nb_trafic_avec_incident, nb_total_trafic, taux_incident_pourcent
+    SQL: nom_ligne, nb_trafic_avec_incident, nb_total_trafic, taux_incident_pourcent
     """
     pipeline = [
         {
@@ -2069,11 +2016,7 @@ def query_C_mongo(db) -> pd.DataFrame:
                 "nb_trafic_avec_incident": {"$sum": "$has_incident"},
                 "nb_total_trafic": {
                     "$sum": {
-                        "$cond": [
-                            {"$ifNull": ["$_id.id_trafic", False]},
-                            1,
-                            0,
-                        ],
+                        "$cond": [{"$ifNull": ["$_id.id_trafic", False]}, 1, 0],
                     },
                 },
             },
@@ -2103,20 +2046,22 @@ def query_C_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": "$_id",  # Colonne 1
-                "nb_trafic_avec_incident": 1,  # Colonne 2
-                "nb_total_trafic": 1,  # Colonne 3
-                "taux_incident_pourcent": 1,  # Colonne 4
+                "nom_ligne": "$_id",
+                "nb_trafic_avec_incident": 1,
+                "nb_total_trafic": 1,
+                "taux_incident_pourcent": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    cols = ["nom_ligne", "nb_trafic_avec_incident", "nb_total_trafic", "taux_incident_pourcent"]
+    return df[cols] if not df.empty else df
 
 
 def query_D_mongo(db) -> pd.DataFrame:
     """
     Requête D (MongoDB).
-    SQL : id_vehicule, immatriculation, moyenne_co2
+    SQL: id_vehicule, immatriculation, moyenne_co2
     """
     pipeline = [
         {
@@ -2128,18 +2073,8 @@ def query_D_mongo(db) -> pd.DataFrame:
                         "$match": {
                             "$expr": {
                                 "$and": [
-                                    {
-                                        "$eq": [
-                                            "$arret.id_ligne",
-                                            "$$ligneId",
-                                        ],
-                                    },
-                                    {
-                                        "$eq": [
-                                            "$type_capteur",
-                                            "CO2",
-                                        ],
-                                    },
+                                    {"$eq": ["$arret.id_ligne", "$$ligneId"]},
+                                    {"$eq": ["$type_capteur", "CO2"]},
                                 ],
                             },
                         },
@@ -2148,9 +2083,7 @@ def query_D_mongo(db) -> pd.DataFrame:
                     {
                         "$group": {
                             "_id": None,
-                            "moyenne_co2": {
-                                "$avg": "$mesures.valeur",
-                            },
+                            "moyenne_co2": {"$avg": "$mesures.valeur"},
                         },
                     },
                 ],
@@ -2168,9 +2101,7 @@ def query_D_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": (
-                    "$arrets.horaires.vehicule.immatriculation"
-                ),
+                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
                 "moyenne_co2": "$co2_info.moyenne_co2",
             },
         },
@@ -2193,19 +2124,20 @@ def query_D_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "id_vehicule": "$_id.id_vehicule",  # Colonne 1
-                "immatriculation": "$_id.immatriculation",  # Colonne 2
-                "moyenne_co2": 1,  # Colonne 3
+                "id_vehicule": "$_id.id_vehicule",
+                "immatriculation": "$_id.immatriculation",
+                "moyenne_co2": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    return df[["id_vehicule", "immatriculation", "moyenne_co2"]] if not df.empty else df
 
 
 def query_E_mongo(db) -> pd.DataFrame:
     """
     Requête E (MongoDB).
-    SQL : nom, moyenne_bruit_db
+    SQL: nom, moyenne_bruit_db
     """
     pipeline = [
         {
@@ -2222,9 +2154,7 @@ def query_E_mongo(db) -> pd.DataFrame:
         {
             "$group": {
                 "_id": "$nom",
-                "moyenne_bruit_db": {
-                    "$avg": "$caps.mesures.valeur",
-                },
+                "moyenne_bruit_db": {"$avg": "$caps.mesures.valeur"},
             },
         },
         {"$sort": {"moyenne_bruit_db": -1}},
@@ -2232,41 +2162,33 @@ def query_E_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom": "$_id",  # Colonne 1
-                "moyenne_bruit_db": 1,  # Colonne 2
+                "nom": "$_id",
+                "moyenne_bruit_db": 1,
             },
         },
     ]
-    return aggregate_to_df(db.quartiers, pipeline)
+    df = aggregate_to_df(db.quartiers, pipeline)
+    return df[["nom", "moyenne_bruit_db"]] if not df.empty else df
 
 
 def query_F_mongo(db) -> pd.DataFrame:
     """
     Requête F (MongoDB).
-    SQL : nom_ligne (DISTINCT)
+    SQL: nom_ligne (DISTINCT)
     """
     pipeline = [
         {
             "$project": {
                 "nom_ligne": 1,
-                "trafic": 1,
                 "has_big_delay": {
                     "$gt": [
                         {
                             "$size": {
                                 "$filter": {
-                                    "input": {
-                                        "$ifNull": [
-                                            "$trafic",
-                                            [],
-                                        ],
-                                    },
+                                    "input": {"$ifNull": ["$trafic", []]},
                                     "as": "t",
                                     "cond": {
-                                        "$gt": [
-                                            "$$t.retard_minutes",
-                                            10,
-                                        ],
+                                        "$gt": ["$$t.retard_minutes", 10],
                                     },
                                 },
                             },
@@ -2279,12 +2201,7 @@ def query_F_mongo(db) -> pd.DataFrame:
                         {
                             "$size": {
                                 "$filter": {
-                                    "input": {
-                                        "$ifNull": [
-                                            "$trafic",
-                                            [],
-                                        ],
-                                    },
+                                    "input": {"$ifNull": ["$trafic", []]},
                                     "as": "t",
                                     "cond": {
                                         "$gt": [
@@ -2293,7 +2210,7 @@ def query_F_mongo(db) -> pd.DataFrame:
                                                     "$ifNull": [
                                                         "$$t.incidents",
                                                         [],
-                                                    ],
+                                                    ]
                                                 }
                                             },
                                             0,
@@ -2316,17 +2233,18 @@ def query_F_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": 1,  # Colonne 1
+                "nom_ligne": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    return df[["nom_ligne"]] if not df.empty else df
 
 
 def query_G_mongo(db) -> pd.DataFrame:
     """
     Requête G (MongoDB).
-    SQL : total_trajets, trajets_sans_retard, taux_ponctualite_global_pourcent
+    SQL: total_trajets, trajets_sans_retard, taux_ponctualite_global_pourcent
     """
     pipeline = [
         {"$unwind": "$trafic"},
@@ -2336,11 +2254,7 @@ def query_G_mongo(db) -> pd.DataFrame:
                 "total_trajets": {"$sum": 1},
                 "trajets_sans_retard": {
                     "$sum": {
-                        "$cond": [
-                            {"$eq": ["$trafic.retard_minutes", 0]},
-                            1,
-                            0,
-                        ],
+                        "$cond": [{"$eq": ["$trafic.retard_minutes", 0]}, 1, 0],
                     },
                 },
             },
@@ -2369,44 +2283,45 @@ def query_G_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "total_trajets": 1,  # Colonne 1
-                "trajets_sans_retard": 1,  # Colonne 2
-                "taux_ponctualite_global_pourcent": 1,  # Colonne 3
+                "total_trajets": 1,
+                "trajets_sans_retard": 1,
+                "taux_ponctualite_global_pourcent": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    cols = ["total_trajets", "trajets_sans_retard", "taux_ponctualite_global_pourcent"]
+    return df[cols] if not df.empty else df
 
 
 def query_H_mongo(db) -> pd.DataFrame:
     """
     Requête H (MongoDB).
-    SQL : nom, nombre_arrets
+    SQL: nom, nombre_arrets
     """
     pipeline = [
         {
             "$addFields": {
-                "nombre_arrets": {
-                    "$size": {"$ifNull": ["$arrets", []]},
-                },
+                "nombre_arrets": {"$size": {"$ifNull": ["$arrets", []]}},
             },
         },
         {"$sort": {"nombre_arrets": -1}},
         {
             "$project": {
                 "_id": 0,
-                "nom": 1,  # Colonne 1
-                "nombre_arrets": 1,  # Colonne 2
+                "nom": 1,
+                "nombre_arrets": 1,
             },
         },
     ]
-    return aggregate_to_df(db.quartiers, pipeline)
+    df = aggregate_to_df(db.quartiers, pipeline)
+    return df[["nom", "nombre_arrets"]] if not df.empty else df
 
 
 def query_I_mongo(db) -> pd.DataFrame:
     """
     Requête I (MongoDB).
-    SQL : nom_ligne, moyenne_retard, moyenne_co2
+    SQL: nom_ligne, moyenne_retard, moyenne_co2
     """
     pipeline = [
         {
@@ -2415,11 +2330,7 @@ def query_I_mongo(db) -> pd.DataFrame:
                     "$cond": [
                         {
                             "$gt": [
-                                {
-                                    "$size": {
-                                        "$ifNull": ["$trafic", []]
-                                    }
-                                },
+                                {"$size": {"$ifNull": ["$trafic", []]}},
                                 0,
                             ],
                         },
@@ -2485,19 +2396,20 @@ def query_I_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": 1,  # Colonne 1
-                "moyenne_retard": 1,  # Colonne 2
-                "moyenne_co2": 1,  # Colonne 3
+                "nom_ligne": 1,
+                "moyenne_retard": 1,
+                "moyenne_co2": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    return df[["nom_ligne", "moyenne_retard", "moyenne_co2"]] if not df.empty else df
 
 
 def query_J_mongo(db) -> pd.DataFrame:
     """
     Requête J (MongoDB).
-    SQL : nom_ligne, moyenne_temperature
+    SQL: nom_ligne, moyenne_temperature
     """
     pipeline = [
         {"$match": {"type_capteur": "Temperature"}},
@@ -2505,9 +2417,7 @@ def query_J_mongo(db) -> pd.DataFrame:
         {
             "$group": {
                 "_id": "$arret.id_ligne",
-                "moyenne_temperature": {
-                    "$avg": "$mesures.valeur",
-                },
+                "moyenne_temperature": {"$avg": "$mesures.valeur"},
             },
         },
         {
@@ -2523,34 +2433,29 @@ def query_J_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": "$ligne.nom_ligne",  # Colonne 1
-                "moyenne_temperature": 1,  # Colonne 2
+                "nom_ligne": "$ligne.nom_ligne",
+                "moyenne_temperature": 1,
             },
         },
     ]
-    return aggregate_to_df(db.capteurs, pipeline)
+    df = aggregate_to_df(db.capteurs, pipeline)
+    return df[["nom_ligne", "moyenne_temperature"]] if not df.empty else df
 
 
 def query_K_mongo(db) -> pd.DataFrame:
     """
     Requête K (MongoDB).
-    SQL : nom (chauffeur), moyenne_retard_minutes
+    SQL: nom, moyenne_retard_minutes
     """
     pipeline = [
         {
             "$addFields": {
-                "nb_trafics": {
-                    "$size": {"$ifNull": ["$trafic", []]},
-                },
+                "nb_trafics": {"$size": {"$ifNull": ["$trafic", []]}},
                 "moyenne_retard_line": {
                     "$cond": [
                         {
                             "$gt": [
-                                {
-                                    "$size": {
-                                        "$ifNull": ["$trafic", []]
-                                    }
-                                },
+                                {"$size": {"$ifNull": ["$trafic", []]}},
                                 0,
                             ],
                         },
@@ -2585,9 +2490,7 @@ def query_K_mongo(db) -> pd.DataFrame:
                     "id_ligne": "$id_ligne",
                 },
                 "total_trafics_line": {"$first": "$nb_trafics"},
-                "moyenne_retard_line": {
-                    "$first": "$moyenne_retard_line",
-                },
+                "moyenne_retard_line": {"$first": "$moyenne_retard_line"},
             },
         },
         {
@@ -2604,9 +2507,7 @@ def query_K_mongo(db) -> pd.DataFrame:
                         ],
                     },
                 },
-                "somme_trafics": {
-                    "$sum": "$total_trafics_line",
-                },
+                "somme_trafics": {"$sum": "$total_trafics_line"},
             },
         },
         {
@@ -2629,42 +2530,42 @@ def query_K_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom": "$_id.nom",  # Colonne 1 (nom chauffeur)
-                "moyenne_retard_minutes": 1,  # Colonne 2
+                "nom": "$_id.nom",
+                "moyenne_retard_minutes": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    return df[["nom", "moyenne_retard_minutes"]] if not df.empty else df
 
 
 def query_L_mongo(db) -> pd.DataFrame:
     """
-    Requête L (MongoDB).
+    Requête L (MongoDB) - CORRIGÉE (DÉDUPLICATION VÉHICULES)
+    Objectif : % Bus électriques.
     SQL : nom_ligne, total_vehicules, nb_electriques, pourcentage_electrique
     """
     pipeline = [
         {"$match": {"type": "Bus"}},
         {"$unwind": "$arrets"},
         {"$unwind": "$arrets.horaires"},
-        {
-            "$project": {
-                "nom_ligne": 1,
-                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "type_vehicule": (
-                    "$arrets.horaires.vehicule.type_vehicule"
-                ),
-            },
-        },
-        {"$match": {"id_vehicule": {"$ne": None}}},
+        
+        {"$match": {"arrets.horaires.vehicule.id_vehicule": {"$ne": None}}},
+
+        # --- DÉDUPLICATION ---
+        # On veut compter les VÉHICULES uniques par ligne, pas les horaires.
         {
             "$group": {
                 "_id": {
                     "nom_ligne": "$nom_ligne",
-                    "id_vehicule": "$id_vehicule",
+                    "id_vehicule": "$arrets.horaires.vehicule.id_vehicule"
                 },
-                "type_vehicule": {"$first": "$type_vehicule"},
-            },
+                "type_vehicule": {"$first": "$arrets.horaires.vehicule.type_vehicule"}
+            }
         },
+        # ---------------------
+
+        # Maintenant on compte les véhicules uniques
         {
             "$group": {
                 "_id": "$_id.nom_ligne",
@@ -2705,20 +2606,20 @@ def query_L_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": "$_id",  # Colonne 1
-                "total_vehicules": 1,  # Colonne 2
-                "nb_electriques": 1,  # Colonne 3
-                "pourcentage_electrique": 1,  # Colonne 4
+                "nom_ligne": "$_id",
+                "total_vehicules": 1,
+                "nb_electriques": 1,
+                "pourcentage_electrique": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
-
-
+    df = aggregate_to_df(db.lignes, pipeline)
+    cols = ["nom_ligne", "total_vehicules", "nb_electriques", "pourcentage_electrique"]
+    return df[cols] if not df.empty else df
 def query_M_mongo(db) -> pd.DataFrame:
     """
     Requête M (MongoDB).
-    SQL : id_capteur, latitude, longitude, moyenne_co2, niveau_pollution
+    SQL: id_capteur, latitude, longitude, moyenne_co2, niveau_pollution
     """
     pipeline = [
         {"$match": {"type_capteur": "CO2"}},
@@ -2755,25 +2656,23 @@ def query_M_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "id_capteur": "$_id.id_capteur",  # Colonne 1
-                "latitude": {
-                    "$arrayElemAt": ["$_id.position.coordinates", 1],
-                },  # Colonne 2 (Lat)
-                "longitude": {
-                    "$arrayElemAt": ["$_id.position.coordinates", 0],
-                },  # Colonne 3 (Lon)
-                "moyenne_co2": 1,  # Colonne 4
-                "niveau_pollution": 1,  # Colonne 5
+                "id_capteur": "$_id.id_capteur",
+                "latitude": {"$arrayElemAt": ["$_id.position.coordinates", 1]},
+                "longitude": {"$arrayElemAt": ["$_id.position.coordinates", 0]},
+                "moyenne_co2": 1,
+                "niveau_pollution": 1,
             },
         },
     ]
-    return aggregate_to_df(db.capteurs, pipeline)
+    df = aggregate_to_df(db.capteurs, pipeline)
+    cols = ["id_capteur", "latitude", "longitude", "moyenne_co2", "niveau_pollution"]
+    return df[cols] if not df.empty else df
 
 
 def query_N_mongo(db) -> pd.DataFrame:
     """
     Requête N (MongoDB).
-    SQL : nom_ligne, type, frequentation_moyenne, categorie_frequentation
+    SQL: nom_ligne, type, frequentation_moyenne, categorie_frequentation
     """
     pipeline = [
         {
@@ -2809,15 +2708,392 @@ def query_N_mongo(db) -> pd.DataFrame:
         {
             "$project": {
                 "_id": 0,
-                "nom_ligne": 1,  # Colonne 1
-                "type": 1,  # Colonne 2
-                "frequentation_moyenne": 1,  # Colonne 3
-                "categorie_frequentation": 1,  # Colonne 4
+                "nom_ligne": 1,
+                "type": 1,
+                "frequentation_moyenne": 1,
+                "categorie_frequentation": 1,
             },
         },
     ]
-    return aggregate_to_df(db.lignes, pipeline)
+    df = aggregate_to_df(db.lignes, pipeline)
+    cols = ["nom_ligne", "type", "frequentation_moyenne", "categorie_frequentation"]
+    return df[cols] if not df.empty else df
 
+##########
+
+def query_B_mongo(db) -> pd.DataFrame:
+    print(">>> DEBUG: query_B_mongo (VERSION FINALE) exécutée")
+    """
+    Requête B : Estimer le nombre moyen de passagers transportés par jour
+    pour chaque ligne.
+    Sortie alignée SQL : colonnes = [nom_ligne, moyenne_passagers_par_jour]
+    """
+    pipeline = [
+        {"$unwind": "$arrets"},
+        {"$unwind": "$arrets.horaires"},
+        {
+            "$match": {
+                "arrets.horaires.passagers_estimes": {"$ne": None},
+                "arrets.horaires.heure_prevue": {"$ne": None},
+            },
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "id_ligne": 1,
+                "nom_ligne": 1,
+                "jour": {
+                    "$dateToString": {
+                        "format": "%Y-%m-%d",
+                        "date": "$arrets.horaires.heure_prevue",
+                    }
+                },
+                "passagers_estimes": "$arrets.horaires.passagers_estimes",
+            }
+        },
+        {
+            "$group": {
+                "_id": {
+                    "id_ligne": "$id_ligne",
+                    "nom_ligne": "$nom_ligne",
+                    "jour": "$jour",
+                },
+                "total_passagers_jour": {"$sum": "$passagers_estimes"},
+            }
+        },
+        {
+            "$group": {
+                "_id": {
+                    "id_ligne": "$_id.id_ligne",
+                    "nom_ligne": "$_id.nom_ligne",
+                },
+                "moyenne_passagers_par_jour": {
+                    "$avg": "$total_passagers_jour"
+                },
+            }
+        },
+        {"$sort": {"moyenne_passagers_par_jour": -1}},
+        {
+            "$project": {
+                "_id": 0,
+                "id_ligne": "$_id.id_ligne",
+                "nom_ligne": "$_id.nom_ligne",
+                "moyenne_passagers_par_jour": 1,
+            }
+        },
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    if df.empty:
+        return df
+
+    return df[["nom_ligne", "moyenne_passagers_par_jour"]]
+
+
+def query_D_mongo(db, debug: bool = False) -> pd.DataFrame:
+    """
+    Requête D : CO2 par véhicule.
+    SQL: id_vehicule, immatriculation, moyenne_co2
+    """
+    pipeline = [
+        # 1. moyenne CO2 par ligne
+        {
+            "$lookup": {
+                "from": "capteurs",
+                "let": {"ligneId": "$id_ligne"},
+                "pipeline": [
+                    {
+                        "$match": {
+                            "$expr": {
+                                "$and": [
+                                    {"$eq": ["$arret.id_ligne", "$$ligneId"]},
+                                    {"$eq": ["$type_capteur", "CO2"]},
+                                ],
+                            },
+                        },
+                    },
+                    {"$unwind": "$mesures"},
+                    {
+                        "$group": {
+                            "_id": None,
+                            "moyenne_co2": {"$avg": "$mesures.valeur"},
+                        },
+                    },
+                ],
+                "as": "co2_info",
+            },
+        },
+        {
+            "$unwind": {
+                "path": "$co2_info",
+                "preserveNullAndEmptyArrays": False,
+            }
+        },
+
+        # 2. Descente vers horaires / véhicules
+        {
+            "$unwind": {
+                "path": "$arrets",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$arrets.horaires",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$match": {
+                "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
+            },
+        },
+
+        # 3. Déduplication véhicule
+        {
+            "$group": {
+                "_id": "$arrets.horaires.vehicule.id_vehicule",
+                "immatriculation": {
+                    "$first": "$arrets.horaires.vehicule.immatriculation",
+                },
+                "moyenne_co2": {"$first": "$co2_info.moyenne_co2"},
+            },
+        },
+        {"$sort": {"moyenne_co2": -1}},
+
+        # 4. Projection finale
+        {
+            "$project": {
+                "_id": 0,
+                "id_vehicule": "$_id",
+                "immatriculation": 1,
+                "moyenne_co2": 1,
+            },
+        },
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    if df.empty:
+        return df
+    return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
+
+def query_K_mongo(db, debug: bool = False) -> pd.DataFrame:
+    """
+    Requête K : Moyenne des retards par chauffeur.
+    SQL: nom, moyenne_retard_minutes
+    """
+    pipeline = [
+        # 1. Stats de retard au niveau ligne
+        {
+            "$addFields": {
+                "nb_trafics": {
+                    "$size": {"$ifNull": ["$trafic", []]},
+                },
+                "moyenne_retard_line": {
+                    "$cond": [
+                        {
+                            "$gt": [
+                                {"$size": {"$ifNull": ["$trafic", []]}},
+                                0,
+                            ],
+                        },
+                        {"$avg": "$trafic.retard_minutes"},
+                        None,
+                    ],
+                },
+            },
+        },
+        {
+            "$match": {
+                "nb_trafics": {"$gt": 0},
+                "moyenne_retard_line": {"$ne": None},
+            },
+        },
+
+        # 2. Descente vers horaires / chauffeurs
+        {
+            "$unwind": {
+                "path": "$arrets",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$arrets.horaires",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$match": {
+                "arrets.horaires.vehicule.chauffeur.nom": {"$ne": None},
+            },
+        },
+
+        # 3. Déduplication (chauffeur, ligne)
+        {
+            "$group": {
+                "_id": {
+                    "nom": "$arrets.horaires.vehicule.chauffeur.nom",
+                    "id_ligne": "$id_ligne",
+                },
+                "nb_trafics_line": {"$first": "$nb_trafics"},
+                "moyenne_retard_line": {"$first": "$moyenne_retard_line"},
+            },
+        },
+
+        # 4. Moyenne pondérée par chauffeur
+        {
+            "$group": {
+                "_id": "$_id.nom",
+                "somme_retards_ponderee": {
+                    "$sum": {
+                        "$multiply": [
+                            "$moyenne_retard_line",
+                            "$nb_trafics_line",
+                        ],
+                    },
+                },
+                "somme_trafics": {"$sum": "$nb_trafics_line"},
+            },
+        },
+        {
+            "$addFields": {
+                "moyenne_retard_minutes": {
+                    "$cond": [
+                        {"$eq": ["$somme_trafics", 0]},
+                        None,
+                        {
+                            "$divide": [
+                                "$somme_retards_ponderee",
+                                "$somme_trafics",
+                            ],
+                        },
+                    ],
+                },
+            },
+        },
+        {"$sort": {"moyenne_retard_minutes": -1}},
+
+        # 5. Projection finale
+        {
+            "$project": {
+                "_id": 0,
+                "nom": "$_id",
+                "moyenne_retard_minutes": 1,
+            },
+        },
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    if df.empty:
+        return df
+    return df[["nom", "moyenne_retard_minutes"]]
+
+def query_L_mongo(db, debug: bool = False) -> pd.DataFrame:
+    """
+    Requête L : % de Bus électriques par ligne.
+    SQL: nom_ligne, total_vehicules, nb_electriques, pourcentage_electrique
+    """
+    pipeline = [
+        # 1. Lignes de type Bus
+        {"$match": {"type": "Bus"}},
+
+        # 2. Descente vers horaires / véhicules
+        {
+            "$unwind": {
+                "path": "$arrets",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$unwind": {
+                "path": "$arrets.horaires",
+                "preserveNullAndEmptyArrays": True,
+            }
+        },
+        {
+            "$match": {
+                "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
+            },
+        },
+
+        # 3. Déduplication véhicule par ligne
+        {
+            "$group": {
+                "_id": {
+                    "nom_ligne": "$nom_ligne",
+                    "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
+                },
+                "type_vehicule": {
+                    "$first": "$arrets.horaires.vehicule.type_vehicule",
+                },
+            },
+        },
+
+        # 4. Stats finales par ligne
+        {
+            "$group": {
+                "_id": "$_id.nom_ligne",
+                "total_vehicules": {"$sum": 1},
+                "nb_electriques": {
+                    "$sum": {
+                        "$cond": [
+                            {"$eq": ["$type_vehicule", "Electrique"]},
+                            1,
+                            0,
+                        ],
+                    },
+                },
+            },
+        },
+        {
+            "$addFields": {
+                "pourcentage_electrique": {
+                    "$cond": [
+                        {"$eq": ["$total_vehicules", 0]},
+                        0,
+                        {
+                            "$multiply": [
+                                {
+                                    "$divide": [
+                                        "$nb_electriques",
+                                        "$total_vehicules",
+                                    ],
+                                },
+                                100,
+                            ],
+                        },
+                    ],
+                },
+            },
+        },
+        {"$sort": {"pourcentage_electrique": -1}},
+
+        # 5. Projection finale
+        {
+            "$project": {
+                "_id": 0,
+                "nom_ligne": "$_id",
+                "total_vehicules": 1,
+                "nb_electriques": 1,
+                "pourcentage_electrique": 1,
+            },
+        },
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    if df.empty:
+        return df
+
+    cols = [
+        "nom_ligne",
+        "total_vehicules",
+        "nb_electriques",
+        "pourcentage_electrique",
+    ]
+    return df[cols]
+
+###########
 
 QUERY_MONGO_FUNCS: Dict[str, Callable] = {
     "A": query_A_mongo,
@@ -2849,8 +3125,6 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
         résultat. En cas d'erreur globale de connexion, toutes les
         entrées contiendront un DataFrame avec une colonne 'erreur'.
     """
-    #            des requêtes Mongo en une version unique, robuste aux
-    #              problèmes de connexion (ping + base absente).
     client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     resultats: Dict[str, pd.DataFrame] = {}
 
@@ -3423,7 +3697,7 @@ def main() -> None:
             "Partie 3 : Mongo",
             "Partie 4 : Dashboard",
             "Partie 5 : Comparaison",
-            "Partie 6 : Assistant IA 🤖",
+            "Partie 6 : Assistant requêtes IA",
         ],
     )
 
