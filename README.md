@@ -170,13 +170,12 @@ python -m venv venv
 # Activation de l'environnement virtuel
 .\venv\Scripts\activate
 
-# Installation des dépendances (dans l'environnement activé)
-pip install -r requirements.txt
-
 # Création du fichier .env et écriture de la variable d'environnement (GROQ_API_KEY)
 # Le fichier .env est créé à la racine du projet.
 Set-Content -Path .env -Value 'GROQ_API_KEY=""'
 
+# Installation des dépendances (dans l'environnement activé)
+pip install -r requirements.txt
 ```
 
 ** Pour Mac / Linux
@@ -194,13 +193,12 @@ python -m venv venv
 # Activation de l'environnement virtuel
 source venv/bin/activate
 
-# Installation des dépendances (dans l'environnement activé)
-pip install -r requirements.txt
-
 # Création du fichier .env et écriture de la variable d'environnement (GROQ_API_KEY)
 # Le fichier .env est créé à la racine du projet.
 echo 'GROQ_API_KEY=""' > .env
 
+# Installation des dépendances (dans l'environnement activé)
+pip install -r requirements.txt
 ```
 
 ### 3. Configuration
