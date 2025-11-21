@@ -5,3 +5,4 @@ sq
 pandas
 streamlit
 dotenv
+groq

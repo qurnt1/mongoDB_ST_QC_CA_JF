@@ -1,3 +1,6 @@
+################ Lancer l'application avec : ###########################
+# python -m streamlit run app.py
+########################################################################
 import os
 import sqlite3
 import time
