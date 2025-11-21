@@ -39,26 +39,33 @@ Tu es un expert MongoDB et Python. Ton but est de traduire une question naturell
 Voici le schéma de la base de données 'Paris2055' :
 
 1. Collection 'lignes' :
-   - Documents : { "id_ligne": int, "nom_ligne": str, "type": str (Bus, Tramway...), "frequentation_moyenne": int, "arrets": [...], "trafic": [{ "retard_minutes": int, "incidents": [...] }] }
+    - Documents : { "id_ligne": int, "nom_ligne": str, "type": str (Bus, Tramway...), "frequentation_moyenne": int, "arrets": [...], "trafic": [{ "retard_minutes": int, "incidents": [...] }] }
 
 2. Collection 'capteurs' :
-   - Documents : { "id_capteur": int, "type_capteur": str (Bruit, CO2, Temperature), "mesures": [{ "valeur": float, "horodatage": date }], "arret": { "nom_ligne": str, "nom_arret": str } }
+    - Documents : { "id_capteur": int, "type_capteur": str (Bruit, CO2, Temperature), "mesures": [{ "valeur": float, "horodatage": date }], "arret": { "nom_ligne": str, "nom_arret": str } }
 
 3. Collection 'quartiers' :
-   - Documents : { "nom": str, "arrets": [...] }
+    - Documents : { "nom": str, "arrets": [...] }
 
 RÈGLES STRICTES DE GÉNÉRATION :
 1. Tu dois répondre UNIQUEMENT un objet JSON valide au format :
-   {
-     "collection": "nom_collection",
-     "pipeline": [ ... ]
-   }
+    {
+      "collection": "nom_collection",
+      "pipeline": [ ... ]
+    }
 
 2. **RÈGLE D'AFFICHAGE (PROJECTION)** : 
-   Tu dois OBLIGATOIREMENT ajouter une étape `"$project"` à la fin du pipeline pour nettoyer le résultat.
-   - Garde UNIQUEMENT le nom de l'entité (ex: `nom_ligne`, `nom`, ou `arret.nom_ligne`) et la valeur calculée/demandée.
-   - SUPPRIME systématiquement `_id` (`"_id": 0`).
-   - SUPPRIME systématiquement les listes lourdes (`arrets`, `trafic`, `mesures`) sauf si l'utilisateur demande explicitement de les voir.
+    Tu dois OBLIGATOIREMENT ajouter une étape `"$project"` à la fin du pipeline pour nettoyer le résultat.
+    - Garde UNIQUEMENT le nom de l'entité (ex: `nom_ligne`, `nom`, ou `arret.nom_ligne`) et la valeur calculée/demandée.
+    - SUPPRIME systématiquement `_id` (`"_id": 0`).
+    - SUPPRIME systématiquement les listes lourdes (`arrets`, `trafic`, `mesures`) sauf si l'utilisateur demande explicitement de les voir.
+
+3. **RÈGLE D'IMPOSSIBILITÉ** : 
+    Si la question de l'utilisateur n'a ABSOLUMENT rien à voir avec le schéma de la base de données, ou s'il est techniquement impossible d'y répondre avec une requête MongoDB (par exemple, une question de philosophie ou une requête impossible même avec l'agrégation), tu dois retourner le JSON suivant, sans changer la collection :
+    {
+      "collection": "lignes",
+      "pipeline": []
+    }
 """
 
 # TODO_REFAC : SCHEMA_CONTEXT conservé tel quel car il fait partie du contrat avec Groq (prompt système).
@@ -2754,6 +2761,11 @@ def init_session_state() -> None:
     st.session_state["migration_logs"] = []
     st.session_state["migration_done_msg"] = ""
     st.session_state["migration_running"] = False
+    
+    # NOUVELLES VARIABLES D'ÉTAT POUR LA PARTIE 5
+    st.session_state["ai_json_response"] = None 
+    # Clé utilisée par le paramètre 'value' du st.text_area pour afficher le contenu
+    st.session_state["ai_question_text_value"] = ""
 
     st.session_state["initialized"] = True
 
@@ -3074,101 +3086,151 @@ def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
     except Exception as exc:
         return None, str(exc)
 
-
 def render_partie_5_ia(tab) -> None:
     """
     Affiche la Partie 5 : assistant IA pilotant la génération de requêtes
     MongoDB via Groq / Llama 3.
-
-    Paramètres
-    ----------
-    tab :
-        Conteneur Streamlit (onglet) dans lequel les éléments sont rendus.
     """
+    QUESTION_BUTTONS = [
+        "Calculer la moyenne des retards (en minutes) pour chaque ligne de transport, triée par ordre décroissant.",
+
+        "Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.",
+
+        "Calculer le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
+
+        "Identifier la moyenne d'émission de CO2 (captée aux arrêts) associée aux véhicules, triée par ordre décroissant.",
+
+        "Trouver les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts."
+    ]
+
+    # Initialisation de l'état pour la réponse JSON de l'IA
+    if "ai_json_response" not in st.session_state:
+        st.session_state["ai_json_response"] = None
+
     with tab:
-        st.subheader("Partie 5 : Assistant IA (Powered by Groq/Llama3)")
+        st.subheader("Partie 5 : Assistant IA 🤖 (Powered by Groq/Llama3)")
         st.markdown(
-            """
-        Posez n'importe quelle question sur vos données. L'IA va générer la requête MongoDB complexe pour vous.
-        *Ex: "Quelles sont les 5 lignes avec le plus de retard moyen ?", "Moyenne de CO2 par ligne", "Arrêts par quartier"*
-        """,
+            "Posez n'importe quelle question sur vos données. "
+            "L'IA va générer la requête MongoDB complexe pour vous.",
         )
 
-        question = st.text_area("💬 Posez votre question :", height=70)
+        # Zone de saisie manuelle : on NE modifie jamais la clé 'ai_question_input' dans le code
+        question = st.text_area(
+            "💬 Posez votre question :",
+            key="ai_question_input",
+            height=70,
+        )
+
+        # Affichage du dernier JSON généré par l'IA (si disponible)
+        if st.session_state.get("ai_json_response"):
+            with st.expander(
+                f"Voir le dernier JSON généré par l'IA "
+                f"(Cible : {st.session_state['ai_json_response'].get('collection', 'N/A')})",
+                expanded=True,
+            ):
+                st.code(
+                    json.dumps(
+                        st.session_state["ai_json_response"],
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    language="json",
+                )
 
         col_btn, _ = st.columns([1, 3])
 
-        if col_btn.button("✨ Générer & Exécuter", type="primary"):
-            if not question.strip():
-                st.warning("Veuillez écrire une question.")
-                return
+        # Variable locale qui décidera si on lance l'IA dans ce run
+        question_a_executer: Optional[str] = None
 
-            with st.spinner("L'IA analyse votre demande..."):
-                result_ia, error = interroger_groq(question)
+        # 1) Bouton principal : on utilise la question tapée dans la zone de texte
+        if col_btn.button("✨ Générer & Exécuter", type="primary", key="btn_ia_run"):
+            question_a_executer = question.strip()
 
-            if error:
-                st.error(f"Erreur IA : {error}")
-                if "Clé API" in error:
-                    st.info(
-                        "Allez sur https://console.groq.com pour choper une clé gratuite !",
+        st.markdown("---")
+
+        # 2) Boutons de questions rapides : on exécute directement le texte du bouton
+        st.markdown("### Questions fréquentes :")
+        cols = st.columns(len(QUESTION_BUTTONS))
+        for i, question_text in enumerate(QUESTION_BUTTONS):
+            if cols[i].button(question_text, key=f"quick_q_{i}"):
+                question_a_executer = question_text
+
+        # Si aucun bouton n'a été cliqué, on s'arrête là
+        if question_a_executer is None:
+            return
+
+        question_a_executer = question_a_executer.strip()
+        if not question_a_executer:
+            st.warning("Veuillez écrire une question.")
+            st.session_state["ai_json_response"] = None
+            return
+
+        st.markdown(f"**Question envoyée à l'IA :** {question_a_executer}")
+
+        # Appel à Groq
+        with st.spinner("L'IA analyse votre demande..."):
+            result_ia, error = interroger_groq(question_a_executer)
+
+        st.session_state["ai_json_response"] = result_ia
+
+        if error:
+            st.error(f"Erreur API/LLM : {error}")
+            if "Clé API" in error:
+                st.info(
+                    "Allez sur https://console.groq.com pour avoir une clé gratuite !",
+                )
+            return
+
+        collection_cible = result_ia.get("collection")
+        pipeline: Optional[List] = result_ia.get("pipeline")
+
+        if not pipeline:
+            st.error(
+                "❌ Requête non comprise ou non pertinente pour la base de données. "
+                "Veuillez poser une question concernant les lignes, capteurs ou quartiers de Paris 2055.",
+            )
+            return
+
+        st.success("Requête générée avec succès !")
+
+        # Exécution MongoDB
+        with st.spinner(
+            f"Exécution sur la collection '{collection_cible}'...",
+        ):
+            try:
+                client = pymongo.MongoClient(MONGO_URI)
+                db = client[MONGO_DB_NAME]
+
+                if collection_cible not in db.list_collection_names():
+                    st.error(
+                        "Erreur : L'IA veut chercher dans "
+                        f"'{collection_cible}' mais cette collection "
+                        "n'existe pas.",
                     )
-                return
-
-            collection_cible = result_ia.get("collection")
-            pipeline = result_ia.get("pipeline")
-
-            st.success("Requête générée avec succès !")
-            with st.expander(
-                f"Voir le code MongoDB généré (Cible : {collection_cible})",
-                expanded=True,
-            ):
-                st.code(json.dumps(pipeline, indent=2), language="json")
-
-            with st.spinner(
-                f"Exécution sur la collection '{collection_cible}'...",
-            ):
-                try:
-                    # TODO_REFAC : Utilisation de la constante MONGO_URI pour éviter
-                    #              la duplication de la chaîne de connexion.
-                    client = pymongo.MongoClient(MONGO_URI)
-                    db = client[MONGO_DB_NAME]
-
-                    if collection_cible not in db.list_collection_names():
-                        st.error(
-                            "Erreur : L'IA veut chercher dans "
-                            f"'{collection_cible}' mais cette collection "
-                            "n'existe pas.",
-                        )
-                        client.close()
-                        return
-
-                    collection = db[collection_cible]
-                    results = list(collection.aggregate(pipeline))
                     client.close()
+                    return
 
-                    if results:
-                        st.markdown(f"### 📊 Résultats ({len(results)})")
-                        df_res = pd.DataFrame(results)
+                collection = db[collection_cible]
+                results = list(collection.aggregate(pipeline))
+                client.close()
 
-                        if "_id" in df_res.columns:
-                            df_res["_id"] = df_res["_id"].astype(str)
-
-                        st.dataframe(df_res, use_container_width=True)
-                    else:
-                        st.warning(
-                            "La requête est valide syntaxiquement, "
-                            "mais aucun résultat n'a été trouvé.",
-                        )
-
-                except Exception as exc:
-                    st.error(f"Erreur lors de l'exécution MongoDB : {exc}")
-
+                if results:
+                    st.markdown(f"### 📊 Résultats ({len(results)})")
+                    df_res = pd.DataFrame(results)
+                    if "_id" in df_res.columns:
+                        df_res["_id"] = df_res["_id"].astype(str)
+                    st.dataframe(df_res, use_container_width=True)
+                else:
+                    st.warning(
+                        "La requête est valide syntaxiquement, "
+                        "mais aucun résultat n'a été trouvé.",
+                    )
+            except Exception as exc:
+                st.error(f"Erreur lors de l'exécution MongoDB : {exc}")
 
 # =====================================================================
 # MAIN STREAMLIT
 # =====================================================================
-
-
 def main() -> None:
     """
     Point d'entrée de l'application Streamlit Paris 2055.

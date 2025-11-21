@@ -1,7 +1,7 @@
 pymongo
 customtkinter
-tkinter
-sqlite3
+tk
+sq
 pandas
 streamlit
 dotenv
