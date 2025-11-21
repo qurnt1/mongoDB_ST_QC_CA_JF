@@ -4,3 +4,4 @@ tkinter
 sqlite3
 pandas
 streamlit
+dotenv

@@ -9,6 +9,7 @@ import pymongo
 from pymongo.errors import PyMongoError
 import streamlit as st
 from groq import Groq
+from dotenv import load_dotenv
 
 
 # TODO_REFAC : Imports regroupés (standard / tiers) et typage enrichi pour faciliter la lecture et les annotations.
