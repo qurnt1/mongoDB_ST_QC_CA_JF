@@ -1,6 +1,6 @@
 #  Paris 2055 : Dashboard de Migration & Analytics (SQL  NoSQL)
 
-Ce projet, réalisé dans le cadre du **BUT 3 Informatique  Parcours Sciences des Données**, est une solution compléte de **Business Intelligence** et d'**ETL**. Il pilote la migration d'un systéme de transport urbain futuriste d'une architecture **relationnelle (SQLite)** vers une architecture **orientée documents (MongoDB)**, le tout via une interface web interactive construite avec **Streamlit**.
+Ce projet, réalisé dans le cadre du **BUT 3 Informatique  Parcours Sciences des Données**, est une solution complète de **Business Intelligence** et d'**ETL**. Il pilote la migration d'un systême de transport urbain futuriste d'une architecture **relationnelle (SQLite)** vers une architecture **orientée documents (MongoDB)**, le tout via une interface web interactive construite avec **Streamlit**.
 
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
@@ -11,7 +11,7 @@ Ce projet, réalisé dans le cadre du **BUT 3 Informatique  Parcours Sciences de
 
 ##  Contexte : Paris 2055
 
-En **2055**, le réseau de transport parisien génére des millions de données en temps réel :
+En **2055**, le réseau de transport parisien génère des millions de données en temps réel :
 
 - mesures de capteurs (**CO2**, **Bruit**, **Température**),
 - informations de **trafic**, retards, incidents,
@@ -24,7 +24,7 @@ L'infrastructure historique basée sur **SQLite** atteint ses limites.
 - supporter la volumétrie et l'évolution du modéle,
 - dénormaliser intelligemment le schéma (modéle document),
 - reproduire et enrichir les **indicateurs métiers**,
-- ouvrir la voie é des **analyses assistées par IA** (Groq / Llama 3).
+- ouvrir la voie à des **analyses assistées par IA** (Groq / Llama 3).
 
 ---
 
@@ -34,7 +34,7 @@ L'application Streamlit est organisée en **5 onglets** :
 
 ###  Partie 1  Analyse SQL (Legacy)
 
-- Exécution automatique de **14 requétes métiers** (A  N) sur la base source **SQLite**.
+- Exécution automatique de **14 requêtes métiers** (A  N) sur la base source **SQLite**.
 - Calculs de KPIs : retards moyens, taux d'incidents, fréquentation, pollution, température, etc.
 - **Mise en cache des résultats au format CSV** (`data/sqlite/resultats_requetes_sqlite/`) pour comparaison ultérieure.
 - Affichage des résultats dans des **DataFrames interactifs**.
@@ -47,7 +47,7 @@ Pipeline **ETL complet** :
 - Lecture de l'ensemble des tables relationnelles : `Ligne`, `Quartier`, `Arret`, `Trafic`, `Capteur`, `Mesure`, `Vehicule`, `Chauffeur`, etc.
 
 #### Transform
-- Construction d'un **modéle document optimisé** :
+- Construction d'un **modêle document optimisé** :
   - `lignes` avec arréts imbriqués (`arrets`), horaires, véhicules et chauffeurs,
   - `capteurs` avec mesures imbriquées (`mesures`),
   - `quartiers` avec arréts associés et géométrie **GeoJSON** (`geom`).
@@ -73,12 +73,12 @@ Pipeline **ETL complet** :
 
 ###  Partie 4  Tableau de bord & Cartographie
 
-- Espace dédié é la **visualisation avancée** (é enrichir) :
+- Espace dédié à la **visualisation avancée** (à enrichir) :
   - exploitation potentielle des champs **GeoJSON** (`geom`, `position`),
   - cartes de pollution, cartes de bruit,
   - dashboards de fréquentation par ligne/quartier.
 
-> Cette partie est structurée dans le code et préte é accueillir des visuels (cartes, graphes, KPIs).
+> Cette partie est structurée dans le code et préte à accueillir des visuels (cartes, graphes, KPIs).
 
 ###  Partie 5  Assistant IA (Groq / Llama 3)
 
@@ -121,7 +121,7 @@ Pipeline **ETL complet** :
 | **Frontend** | Streamlit (UI multi-onglets) |
 | **Base relationnelle** | SQLite (`data/sqlite/db/paris2055.sqlite`) |
 | **Base NoSQL** | MongoDB (`Paris2055`, collections `lignes`, `quartiers`, `capteurs`) |
-| **IA** | Groq API, modéle Llama 3 (assistant IA pour requétes MongoDB) |
+| **IA** | Groq API, modèle Llama 3 (assistant IA pour requétes MongoDB) |
 
 ### Organisation des dossiers
 
@@ -135,12 +135,12 @@ paris2055/
         db/
            paris2055.sqlite    # Base relationnelle source
         resultats_requetes_sqlite/
-            resultat_req_*.csv  # Résultats des requétes SQL (cache)
+            resultat_req_*.csv  # Résultats des requêtes SQL (cache)
      mongodb/
          collections/
             Collection_*.json   # Exports JSON intermédiaires (ETL)
          resultats_requetes_mongodb/
-             resultat_req_*.csv  # Résultats des requétes MongoDB (cache)
+             resultat_req_*.csv  # Résultats des requêtes MongoDB (cache)
 ```
 
 ---
@@ -153,7 +153,7 @@ paris2055/
 - **MongoDB** :
   - instance locale (`mongodb://127.0.0.1:27017/`), ou
   - cluster MongoDB Atlas.
-- **(Optionnel)** Une clé API Groq (pour la Partie 5) : é générer sur [https://console.groq.com](https://console.groq.com)
+- **(Optionnel)** Une clé API Groq (pour la Partie 5) : à générer sur [https://console.groq.com](https://console.groq.com) (Et / ou demander a Quentin)
 
 ### 2. Cloner le projet et créer l'environnement
 ** Pour Windows
@@ -308,18 +308,7 @@ Un onglet s'ouvre dans votre navigateur (par défaut sur `http://localhost:8501`
   - d'abord en SQL (sur la base normalisée),
   - puis en MongoDB Aggregation (sur le modéle document).
 - Les CSV générés cété SQL / Mongo facilitent l'audit et les comparaisons.
-
----
-
-##  Limitations et pistes d'amélioration
-
-- La Partie 4 (Dashboard/Cartographie) est volontairement générique, é enrichir selon les besoins (Mapbox, Folium, etc.).
-- L'assistant IA (Partie 5) repose sur un prompt de schéma simplifié ; il peut étre affiné pour :
-  - gérer davantage de cas métier,
-  - forcer des conventions de nommage,
-  - proposer des explications textuelles en plus du pipeline JSON.
-- Aujourd'hui, la clé Groq est définie en dur dans le code : une gestion par variables d'environnement serait plus adaptée en production.
-
+  
 ---
 
 ##  Licence
@@ -329,6 +318,6 @@ Ce projet est réalisé dans un cadre pédagogique.
 ```
 Copyright (c) 2025 
 
-Utilisation autorisée é des fins pédagogiques et de démonstration.
-Toute réutilisation ou diffusion extérieure doit étre validée par l'auteur.
+Utilisation autorisée à des fins pédagogiques et de démonstration.
+Toute réutilisation ou diffusion extérieure doit étre validée par les auteurs.
 ```
