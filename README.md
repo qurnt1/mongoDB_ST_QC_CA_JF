@@ -181,7 +181,7 @@ Set-Content -Path .env -Value 'GROQ_API_KEY=""'
 
 ** Pour Mac / Linux
 
-```
+```bash
 # Cloner le projet
 git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
 
