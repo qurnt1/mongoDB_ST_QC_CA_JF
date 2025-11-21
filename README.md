@@ -209,7 +209,8 @@ Dans le code, la clé est définie par :
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 ```
 
-Si vous n'avez pas la clé API, demandez la a Quentin et mettez la dans votre fichier .venv sous le format suivant :
+Si vous n'avez pas la clé API, demandez la a Quentin et mettez la dans votre fichier .venv (ou .env) 
+sous le format suivant :
 GROQ_API_KEY = "gsk_XXXXXXXXXXX"
 
 
