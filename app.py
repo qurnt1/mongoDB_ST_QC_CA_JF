@@ -30,7 +30,9 @@ DOSSIER_MONGO_CSV = os.path.join(
 MONGO_URI = "mongodb://127.0.0.1:27017/"
 MONGO_DB_NAME = "Paris2055"
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 SCHEMA_CONTEXT = """
 Tu es un expert MongoDB et Python. Ton but est de traduire une question naturelle en requête d'agrégation MongoDB.
