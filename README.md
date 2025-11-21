@@ -217,7 +217,7 @@ sous le format suivant :
 GROQ_API_KEY = "gsk_XXXXXXXXXXX"
 
 
-**Variante (si vous préférez les variables d'environnement):** vous pouvez adapter le code pour lire `os.getenv("GROQ_API_KEY")` au lieu de fixer la clé en dur.
+**Variante (si vous préférez ne pas utiliser les variables d'environnements):** vous pouvez adapter le code pour lire `GROQ_API_KEY = "{votre clef api}"` au lieu de fixer la clé en variable d'environement.
 
 ### 4. Lancement de l'application
 
