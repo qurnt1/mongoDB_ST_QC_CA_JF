@@ -158,7 +158,7 @@ paris2055/
 ### 2. Cloner le projet et créer l'environnement
 
 ```bash
-git clone https://github.com/votre-repo/paris2055-migration.git
+git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
 cd paris2055-migration
 
 # Création de l'environnement virtuel (recommandé)
