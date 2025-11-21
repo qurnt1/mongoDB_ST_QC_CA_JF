@@ -1,0 +1,6 @@
+pymongo
+customtkinter
+tkinter
+sqlite3
+pandas
+streamlit
