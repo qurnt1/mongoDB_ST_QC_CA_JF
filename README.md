@@ -210,7 +210,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 ```
 
 Si vous n'avez pas la clé API, demandez la a Quentin et mettez la dans votre fichier .venv sous le format suivant :
-GROQ_API_KEY = "gsk"
+GROQ_API_KEY = "gsk_XXXXXXXXXXX"
 
 
 **Variante (si vous préférez les variables d'environnement):** vous pouvez adapter le code pour lire `os.getenv("GROQ_API_KEY")` au lieu de fixer la clé en dur.
