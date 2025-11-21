@@ -156,24 +156,50 @@ paris2055/
 - **(Optionnel)** Une clé API Groq (pour la Partie 5) : é générer sur [https://console.groq.com](https://console.groq.com)
 
 ### 2. Cloner le projet et créer l'environnement
-
+** Pour Windows
 ```bash
+# Cloner le projet
 git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
 
 # Déplacer dans le dossier
 cd mongoDB_ST_QC_CA_JF
 
-# Installation des dépendances
+# Création de l'environnement virtuel (recommandé)
+python -m venv venv
+
+# Activation de l'environnement virtuel
+.\venv\Scripts\activate
+
+# Installation des dépendances (dans l'environnement activé)
 pip install -r requirements.txt
+
+# Création du fichier .env et écriture de la variable d'environnement (GROQ_API_KEY)
+# Le fichier .env est créé à la racine du projet.
+Set-Content -Path .env -Value 'GROQ_API_KEY=""'
+
+```
+
+** Pour Mac / Linux
+
+```
+# Cloner le projet
+git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
+
+# Déplacer dans le dossier
+cd mongoDB_ST_QC_CA_JF
 
 # Création de l'environnement virtuel (recommandé)
 python -m venv venv
 
-# Windows
-venv\Scripts\activate
-
-# Mac / Linux
+# Activation de l'environnement virtuel
 source venv/bin/activate
+
+# Installation des dépendances (dans l'environnement activé)
+pip install -r requirements.txt
+
+# Création du fichier .env et écriture de la variable d'environnement (GROQ_API_KEY)
+# Le fichier .env est créé à la racine du projet.
+echo 'GROQ_API_KEY=""' > .env
 
 ```
 
