@@ -159,7 +159,7 @@ paris2055/
 
 ```bash
 git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
-cd paris2055-migration
+cd mongoDB_ST_QC_CA_JF
 
 # Création de l'environnement virtuel (recommandé)
 python -m venv venv
