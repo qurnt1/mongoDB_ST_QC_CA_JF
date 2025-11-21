@@ -1460,19 +1460,23 @@ def executer_toutes_les_requetes() -> Dict[str, pd.DataFrame]:
             "ORDER BY moyenne_retard_minutes DESC;"
         ),
         "B": (
-            "SELECT L.nom_ligne, "
-            "AVG(T.total_passagers_jour) AS moyenne_passagers_par_jour "
+            "SELECT "
+            "    L.id_ligne, "
+            "    AVG(T.total_passagers_jour) AS moyenne_passagers_jour "
             "FROM ( "
-            "  SELECT V.id_ligne, "
-            "         DATE(H.heure_prevue) AS jour, "
-            "         SUM(H.passagers_estimes) AS total_passagers_jour "
-            "  FROM Horaire AS H "
-            "  JOIN Vehicule AS V ON H.id_vehicule = V.id_vehicule "
-            "  GROUP BY V.id_ligne, jour "
+            "    SELECT "
+            "        A.id_ligne, "
+            "        DATE(H.heure_prevue) AS jour, "
+            "        SUM(H.passagers_estimes) AS total_passagers_jour "
+            "    FROM Horaire AS H "
+            "    JOIN Arret AS A ON H.id_arret = A.id_arret "
+            "    GROUP BY "
+            "        A.id_ligne, "
+            "        jour "
             ") AS T "
             "JOIN Ligne AS L ON T.id_ligne = L.id_ligne "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY moyenne_passagers_par_jour DESC;"
+            "GROUP BY L.id_ligne "
+            "ORDER BY moyenne_passagers_jour DESC;"
         ),
         "C": (
             "SELECT L.nom_ligne, "
@@ -2721,74 +2725,54 @@ def query_N_mongo(db) -> pd.DataFrame:
 
 ##########
 
-def query_B_mongo(db) -> pd.DataFrame:
-    print(">>> DEBUG: query_B_mongo (VERSION FINALE) exécutée")
+
+def query_B_mongo(db):
     """
-    Requête B : Estimer le nombre moyen de passagers transportés par jour
-    pour chaque ligne.
-    Sortie alignée SQL : colonnes = [nom_ligne, moyenne_passagers_par_jour]
+    Requête B en MongoDB :
+    Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.
+    Retourne un DataFrame avec :
+        - id_ligne
+        - moyenne_passagers_jour
     """
     pipeline = [
         {"$unwind": "$arrets"},
         {"$unwind": "$arrets.horaires"},
         {
-            "$match": {
-                "arrets.horaires.passagers_estimes": {"$ne": None},
-                "arrets.horaires.heure_prevue": {"$ne": None},
-            },
-        },
-        {
             "$project": {
                 "_id": 0,
-                "id_ligne": 1,
-                "nom_ligne": 1,
+                "id_ligne": "$id_ligne",
                 "jour": {
-                    "$dateToString": {
-                        "format": "%Y-%m-%d",
-                        "date": "$arrets.horaires.heure_prevue",
-                    }
+                    "$substrBytes": ["$arrets.horaires.heure_prevue", 0, 10]
                 },
                 "passagers_estimes": "$arrets.horaires.passagers_estimes",
             }
         },
         {
             "$group": {
-                "_id": {
-                    "id_ligne": "$id_ligne",
-                    "nom_ligne": "$nom_ligne",
-                    "jour": "$jour",
-                },
+                "_id": {"id_ligne": "$id_ligne", "jour": "$jour"},
                 "total_passagers_jour": {"$sum": "$passagers_estimes"},
             }
         },
         {
             "$group": {
-                "_id": {
-                    "id_ligne": "$_id.id_ligne",
-                    "nom_ligne": "$_id.nom_ligne",
-                },
-                "moyenne_passagers_par_jour": {
-                    "$avg": "$total_passagers_jour"
-                },
+                "_id": "$_id.id_ligne",
+                "moyenne_passagers_jour": {"$avg": "$total_passagers_jour"},
             }
         },
-        {"$sort": {"moyenne_passagers_par_jour": -1}},
         {
             "$project": {
                 "_id": 0,
-                "id_ligne": "$_id.id_ligne",
-                "nom_ligne": "$_id.nom_ligne",
-                "moyenne_passagers_par_jour": 1,
+                "id_ligne": "$_id",
+                "moyenne_passagers_jour": 1,
             }
         },
+        {"$sort": {"moyenne_passagers_jour": -1}},
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
     if df.empty:
         return df
-
-    return df[["nom_ligne", "moyenne_passagers_par_jour"]]
-
+    return df[["id_ligne", "moyenne_passagers_jour"]]
 
 def query_D_mongo(db, debug: bool = False) -> pd.DataFrame:
     """
