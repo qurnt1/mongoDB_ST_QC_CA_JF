@@ -1,6 +1,6 @@
 #  Paris 2055 : Dashboard de Migration & Analytics (SQL  NoSQL)
 
-Ce projet, réalisé dans le cadre du **BUT 3 Informatique  Parcours Sciences des Données**, est une solution complète de **Business Intelligence** et d'**ETL**. Il pilote la migration d'un système de transport urbain futuriste d'une architecture **relationnelle (SQLite)** vers une architecture **orientée documents (MongoDB)**, le tout via une interface web interactive construite avec **Streamlit**.
+Ce projet, rÃ©alisÃ© dans le cadre du **BUT 3 Informatique  Parcours Sciences des DonnÃ©es**, est une solution complÃ©te de **Business Intelligence** et d'**ETL**. Il pilote la migration d'un systÃ©me de transport urbain futuriste d'une architecture **relationnelle (SQLite)** vers une architecture **orientÃ©e documents (MongoDB)**, le tout via une interface web interactive construite avec **Streamlit**.
 
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
@@ -11,33 +11,33 @@ Ce projet, réalisé dans le cadre du **BUT 3 Informatique  Parcours Sciences des 
 
 ##  Contexte : Paris 2055
 
-En **2055**, le réseau de transport parisien génère des millions de données en temps réel :
+En **2055**, le rÃ©seau de transport parisien gÃ©nÃ©re des millions de donnÃ©es en temps rÃ©el :
 
-- mesures de capteurs (**CO2**, **Bruit**, **Température**),
+- mesures de capteurs (**CO2**, **Bruit**, **TempÃ©rature**),
 - informations de **trafic**, retards, incidents,
-- données de **fréquentation** et de **quartiers**.
+- donnÃ©es de **frÃ©quentation** et de **quartiers**.
 
-L'infrastructure historique basée sur **SQLite** atteint ses limites.
+L'infrastructure historique basÃ©e sur **SQLite** atteint ses limites.
 
-**Objectif pédagogique et technique :** concevoir un pipeline de migration vers **MongoDB** pour :
+**Objectif pÃ©dagogique et technique :** concevoir un pipeline de migration vers **MongoDB** pour :
 
-- supporter la volumétrie et l'évolution du modèle,
-- dénormaliser intelligemment le schéma (modèle document),
-- reproduire et enrichir les **indicateurs métiers**,
-- ouvrir la voie à des **analyses assistées par IA** (Groq / Llama 3).
+- supporter la volumÃ©trie et l'Ã©volution du modÃ©le,
+- dÃ©normaliser intelligemment le schÃ©ma (modÃ©le document),
+- reproduire et enrichir les **indicateurs mÃ©tiers**,
+- ouvrir la voie Ã© des **analyses assistÃ©es par IA** (Groq / Llama 3).
 
 ---
 
-##  Fonctionnalités principales
+##  FonctionnalitÃ©s principales
 
-L'application Streamlit est organisée en **5 onglets** :
+L'application Streamlit est organisÃ©e en **5 onglets** :
 
 ###  Partie 1  Analyse SQL (Legacy)
 
-- Exécution automatique de **14 requêtes métiers** (A  N) sur la base source **SQLite**.
-- Calculs de KPIs : retards moyens, taux d'incidents, fréquentation, pollution, température, etc.
-- **Mise en cache des résultats au format CSV** (`data/sqlite/resultats_requetes_sqlite/`) pour comparaison ultérieure.
-- Affichage des résultats dans des **DataFrames interactifs**.
+- ExÃ©cution automatique de **14 requÃ©tes mÃ©tiers** (A  N) sur la base source **SQLite**.
+- Calculs de KPIs : retards moyens, taux d'incidents, frÃ©quentation, pollution, tempÃ©rature, etc.
+- **Mise en cache des rÃ©sultats au format CSV** (`data/sqlite/resultats_requetes_sqlite/`) pour comparaison ultÃ©rieure.
+- Affichage des rÃ©sultats dans des **DataFrames interactifs**.
 
 ###  Partie 2  ETL & Migration vers MongoDB
 
@@ -47,19 +47,19 @@ Pipeline **ETL complet** :
 - Lecture de l'ensemble des tables relationnelles : `Ligne`, `Quartier`, `Arret`, `Trafic`, `Capteur`, `Mesure`, `Vehicule`, `Chauffeur`, etc.
 
 #### Transform
-- Construction d'un **modèle document optimisé** :
-  - `lignes` avec arrêts imbriqués (`arrets`), horaires, véhicules et chauffeurs,
-  - `capteurs` avec mesures imbriquées (`mesures`),
-  - `quartiers` avec arrêts associés et géométrie **GeoJSON** (`geom`).
-- Dénormalisation raisonnée pour accélérer les requêtes analytiques.
+- Construction d'un **modÃ©le document optimisÃ©** :
+  - `lignes` avec arrÃ©ts imbriquÃ©s (`arrets`), horaires, vÃ©hicules et chauffeurs,
+  - `capteurs` avec mesures imbriquÃ©es (`mesures`),
+  - `quartiers` avec arrÃ©ts associÃ©s et gÃ©omÃ©trie **GeoJSON** (`geom`).
+- DÃ©normalisation raisonnÃ©e pour accÃ©lÃ©rer les requÃ©tes analytiques.
 
 #### Load
 - Insertion haute performance dans MongoDB via `insert_many` par **batchs**.
-- Création d'**index** utiles (textuels et géospatiaux, `2dsphere`) pour les futures requêtes.
-- **Monitoring** : journal de migration en temps réel dans l'UI (logs détaillés, progression par pourcentage).
+- CrÃ©ation d'**index** utiles (textuels et gÃ©ospatiaux, `2dsphere`) pour les futures requÃ©tes.
+- **Monitoring** : journal de migration en temps rÃ©el dans l'UI (logs dÃ©taillÃ©s, progression par pourcentage).
 - Protection contre les plantages (try/except, messages d'erreur lisibles).
 
-**Collections cibles créées dans la base MongoDB `Paris2055`:**
+**Collections cibles crÃ©Ã©es dans la base MongoDB `Paris2055`:**
 
 - `lignes`
 - `quartiers`
@@ -67,28 +67,28 @@ Pipeline **ETL complet** :
 
 ###  Partie 3  Analytics NoSQL (MongoDB)
 
-- Reproduction des **14 KPIs métiers** A  N, cette fois via le **MongoDB Aggregation Framework** sur les collections dénormalisées.
-- Sauvegarde des résultats en CSV dans `data/mongodb/resultats_requetes_mongodb/`.
-- Comparaison possible **SQL vs MongoDB** (performances, structure des résultats, cohérence).
+- Reproduction des **14 KPIs mÃ©tiers** A  N, cette fois via le **MongoDB Aggregation Framework** sur les collections dÃ©normalisÃ©es.
+- Sauvegarde des rÃ©sultats en CSV dans `data/mongodb/resultats_requetes_mongodb/`.
+- Comparaison possible **SQL vs MongoDB** (performances, structure des rÃ©sultats, cohÃ©rence).
 
 ###  Partie 4  Tableau de bord & Cartographie
 
-- Espace dédié à la **visualisation avancée** (à enrichir) :
+- Espace dÃ©diÃ© Ã© la **visualisation avancÃ©e** (Ã© enrichir) :
   - exploitation potentielle des champs **GeoJSON** (`geom`, `position`),
   - cartes de pollution, cartes de bruit,
-  - dashboards de fréquentation par ligne/quartier.
+  - dashboards de frÃ©quentation par ligne/quartier.
 
-> Cette partie est structurée dans le code et prête à accueillir des visuels (cartes, graphes, KPIs).
+> Cette partie est structurÃ©e dans le code et prÃ©te Ã© accueillir des visuels (cartes, graphes, KPIs).
 
 ###  Partie 5  Assistant IA (Groq / Llama 3)
 
-- Intégration d'un **assistant IA** via l'API **Groq** (modèle Llama 3).
-- Traduction automatique du **langage naturel**  **pipeline d'agrégation MongoDB**.
+- IntÃ©gration d'un **assistant IA** via l'API **Groq** (modÃ©le Llama 3).
+- Traduction automatique du **langage naturel**  **pipeline d'agrÃ©gation MongoDB**.
 
 **Fonctionnement :**
 
 1. L'utilisateur saisit une question du type :
-   >  Donne-moi les 5 lignes les plus polluées par le CO2 
+   >  Donne-moi les 5 lignes les plus polluÃ©es par le CO2 
    >  Classe les quartiers par niveau moyen de bruit 
    >  Moyenne des retards par type de ligne 
 
@@ -105,9 +105,9 @@ Pipeline **ETL complet** :
    ```
 
 3. L'application :
-   - affiche le pipeline généré,
-   - l'exécute sur MongoDB,
-   - et affiche le résultat sous forme de DataFrame.
+   - affiche le pipeline gÃ©nÃ©rÃ©,
+   - l'exÃ©cute sur MongoDB,
+   - et affiche le rÃ©sultat sous forme de DataFrame.
 
 ---
 
@@ -121,47 +121,47 @@ Pipeline **ETL complet** :
 | **Frontend** | Streamlit (UI multi-onglets) |
 | **Base relationnelle** | SQLite (`data/sqlite/db/paris2055.sqlite`) |
 | **Base NoSQL** | MongoDB (`Paris2055`, collections `lignes`, `quartiers`, `capteurs`) |
-| **IA** | Groq API, modèle Llama 3 (assistant IA pour requêtes MongoDB) |
+| **IA** | Groq API, modÃ©le Llama 3 (assistant IA pour requÃ©tes MongoDB) |
 
 ### Organisation des dossiers
 
 ```
 paris2055/
  app.py                          # Application principale Streamlit
- requirements.txt                # Dépendances Python
+ requirements.txt                # DÃ©pendances Python
  README.md                       # Ce fichier
  data/
      sqlite/
         db/
            paris2055.sqlite    # Base relationnelle source
         resultats_requetes_sqlite/
-            resultat_req_*.csv  # Résultats des requêtes SQL (cache)
+            resultat_req_*.csv  # RÃ©sultats des requÃ©tes SQL (cache)
      mongodb/
          collections/
-            Collection_*.json   # Exports JSON intermédiaires (ETL)
+            Collection_*.json   # Exports JSON intermÃ©diaires (ETL)
          resultats_requetes_mongodb/
-             resultat_req_*.csv  # Résultats des requêtes MongoDB (cache)
+             resultat_req_*.csv  # RÃ©sultats des requÃ©tes MongoDB (cache)
 ```
 
 ---
 
 ##  Installation et Lancement
 
-### 1. Prérequis
+### 1. PrÃ©requis
 
-- **Python 3.10** ou supérieur
+- **Python 3.10** ou supÃ©rieur
 - **MongoDB** :
   - instance locale (`mongodb://127.0.0.1:27017/`), ou
   - cluster MongoDB Atlas.
-- **(Optionnel)** Une clé API Groq (pour la Partie 5) : à générer sur [https://console.groq.com](https://console.groq.com)
+- **(Optionnel)** Une clÃ© API Groq (pour la Partie 5) : Ã© gÃ©nÃ©rer sur [https://console.groq.com](https://console.groq.com)
 
-### 2. Cloner le projet et créer l'environnement
+### 2. Cloner le projet et crÃ©er l'environnement
 
 ```bash
 git clone https://github.com/votre-repo/paris2055-migration.git
 cd paris2055-migration
 
-# Création de l'environnement virtuel (recommandé)
+# CrÃ©ation de l'environnement virtuel (recommandÃ©)
 python -m venv venv
 
 # Windows
@@ -170,7 +170,7 @@ venv\Scripts\activate
 # Mac / Linux
 source venv/bin/activate
 
-# Installation des dépendances
+# Installation des dÃ©pendances
 pip install -r requirements.txt
 ```
 
@@ -178,7 +178,7 @@ pip install -r requirements.txt
 
 #### Base SQLite
 
-La base SQLite doit être disponible à l'emplacement suivant (créé automatiquement si besoin) :
+La base SQLite doit Ã©tre disponible Ã© l'emplacement suivant (crÃ©Ã© automatiquement si besoin) :
 
 ```
 data/sqlite/db/paris2055.sqlite
@@ -192,68 +192,70 @@ DB_FILE = os.path.join("data", "sqlite", "db", "paris2055.sqlite")
 
 #### Connexion MongoDB
 
-Par défaut, l'application utilise :
+Par dÃ©faut, l'application utilise :
 
 ```python
 MONGO_URI = "mongodb://127.0.0.1:27017/"
 MONGO_DB_NAME = "Paris2055"
 ```
 
-Pour une autre instance ou un cluster Atlas, adaptez la valeur de `MONGO_URI` (et éventuellement `MONGO_DB_NAME`) dans le fichier principal.
+Pour une autre instance ou un cluster Atlas, adaptez la valeur de `MONGO_URI` (et Ã©ventuellement `MONGO_DB_NAME`) dans le fichier principal.
 
-#### Clé API Groq (Assistant IA)
+#### ClÃ© API Groq (Assistant IA)
 
-Dans le code, la clé est définie par :
+Dans le code, la clÃ© est dÃ©finie par :
 
 ```python
-GROQ_API_KEY = "gsk_API_KEY_A_REMPLACER"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 ```
 
-Remplacez-la par votre clé personnelle. Sans clé valide, la Partie 5 (Assistant IA) sera désactivée et l'application affichera un message explicite.
+Si vous n'avez pas la clÃ© API, demandez la a Quentin et mettez la dans votre fichier .venv sous le format suivant :
+GROQ_API_KEY = "gsk"
 
-**Variante (si vous préférez les variables d'environnement):** vous pouvez adapter le code pour lire `os.getenv("GROQ_API_KEY")` au lieu de fixer la clé en dur.
+
+**Variante (si vous prÃ©fÃ©rez les variables d'environnement):** vous pouvez adapter le code pour lire `os.getenv("GROQ_API_KEY")` au lieu de fixer la clÃ© en dur.
 
 ### 4. Lancement de l'application
 
-Depuis la racine du projet (environnement virtuel activé) :
+Depuis la racine du projet (environnement virtuel activÃ©) :
 
 ```bash
 streamlit run app.py
 ```
 
-Un onglet s'ouvre dans votre navigateur (par défaut sur `http://localhost:8501`).
+Un onglet s'ouvre dans votre navigateur (par dÃ©faut sur `http://localhost:8501`).
 
 ---
 
-##  Parcours utilisateur recommandé
+##  Parcours utilisateur recommandÃ©
 
 ### Partie 1  SQL
 
-1. Vérifier le bon fonctionnement de la base SQLite.
-2. Cliquer sur  Executer Requetes  pour générer les 14 KPIs.
-3. Les résultats sont également exportés en CSV pour audit/comparaison.
+1. VÃ©rifier le bon fonctionnement de la base SQLite.
+2. Cliquer sur  Executer Requetes  pour gÃ©nÃ©rer les 14 KPIs.
+3. Les rÃ©sultats sont Ã©galement exportÃ©s en CSV pour audit/comparaison.
 
 ### Partie 2  Migration
 
 1. Cliquer sur  Lancer Migration .
-2. Suivre l'évolution du journal de migration (logs détaillés).
-3. À la fin, les collections `lignes`, `quartiers`, `capteurs` sont créées dans MongoDB, avec leurs index.
+2. Suivre l'Ã©volution du journal de migration (logs dÃ©taillÃ©s).
+3. Ã© la fin, les collections `lignes`, `quartiers`, `capteurs` sont crÃ©Ã©es dans MongoDB, avec leurs index.
 
 ### Partie 3  MongoDB
 
-1. Vérifier que le serveur MongoDB est connecté et que la base `Paris2055` existe (panneau latéral).
-2. Cliquer sur  Executer Requetes MongoDB  pour recalculer les 14 KPIs sur le modèle NoSQL.
-3. Comparer les résultats SQL vs MongoDB pour valider la migration.
+1. VÃ©rifier que le serveur MongoDB est connectÃ© et que la base `Paris2055` existe (panneau latÃ©ral).
+2. Cliquer sur  Executer Requetes MongoDB  pour recalculer les 14 KPIs sur le modÃ©le NoSQL.
+3. Comparer les rÃ©sultats SQL vs MongoDB pour valider la migration.
 
 ### Partie 4  Dashboard
 
-- Utiliser cet onglet pour développer des visualisations avancées (cartes, graphiques, heatmaps, etc.) à partir des collections MongoDB.
+- Utiliser cet onglet pour dÃ©velopper des visualisations avancÃ©es (cartes, graphiques, heatmaps, etc.) Ã© partir des collections MongoDB.
 
 ### Partie 5  Assistant IA
 
 1. Saisir une question en langage naturel.
-2. Laisser l'IA générer le pipeline d'agrégation, puis l'exécuter.
-3. Inspecter le JSON proposé et le résultat agrégé associé.
+2. Laisser l'IA gÃ©nÃ©rer le pipeline d'agrÃ©gation, puis l'exÃ©cuter.
+3. Inspecter le JSON proposÃ© et le rÃ©sultat agrÃ©gÃ© associÃ©.
 
 ---
 
@@ -261,42 +263,42 @@ Un onglet s'ouvre dans votre navigateur (par défaut sur `http://localhost:8501`)
 
 ### Migration progressive & robuste
 
-- Groupements par clé métier (`id_ligne`, `id_arret`, `id_capteur`, etc.).
-- Conversion sécurisée des dates (`to_datetime`) et des coordonnées (GeoJSON).
-- Construction de sous-documents imbriqués (`arrets`, `horaire`, `vehicule`, `chauffeur`, `mesures`, `incidents`).
+- Groupements par clÃ© mÃ©tier (`id_ligne`, `id_arret`, `id_capteur`, etc.).
+- Conversion sÃ©curisÃ©e des dates (`to_datetime`) et des coordonnÃ©es (GeoJSON).
+- Construction de sous-documents imbriquÃ©s (`arrets`, `horaire`, `vehicule`, `chauffeur`, `mesures`, `incidents`).
 
 ### Performance
 
-- Traitement par batchs (ex. 25 000 documents) pour limiter la consommation mémoire et les tailles de requêtes Mongo.
-- Logs de progression contrôlés (`step_percent`) pour éviter de saturer l'interface Streamlit.
+- Traitement par batchs (ex. 25 000 documents) pour limiter la consommation mÃ©moire et les tailles de requÃ©tes Mongo.
+- Logs de progression contrÃ©lÃ©s (`step_percent`) pour Ã©viter de saturer l'interface Streamlit.
 
-### Cohérence des résultats
+### CohÃ©rence des rÃ©sultats
 
-- Requêtes A  N réécrites à l'identique :
-  - d'abord en SQL (sur la base normalisée),
-  - puis en MongoDB Aggregation (sur le modèle document).
-- Les CSV générés côté SQL / Mongo facilitent l'audit et les comparaisons.
+- RequÃ©tes A  N rÃ©Ã©crites Ã© l'identique :
+  - d'abord en SQL (sur la base normalisÃ©e),
+  - puis en MongoDB Aggregation (sur le modÃ©le document).
+- Les CSV gÃ©nÃ©rÃ©s cÃ©tÃ© SQL / Mongo facilitent l'audit et les comparaisons.
 
 ---
 
-##  Limitations et pistes d'amélioration
+##  Limitations et pistes d'amÃ©lioration
 
-- La Partie 4 (Dashboard/Cartographie) est volontairement générique, à enrichir selon les besoins (Mapbox, Folium, etc.).
-- L'assistant IA (Partie 5) repose sur un prompt de schéma simplifié ; il peut être affiné pour :
-  - gérer davantage de cas métier,
+- La Partie 4 (Dashboard/Cartographie) est volontairement gÃ©nÃ©rique, Ã© enrichir selon les besoins (Mapbox, Folium, etc.).
+- L'assistant IA (Partie 5) repose sur un prompt de schÃ©ma simplifiÃ© ; il peut Ã©tre affinÃ© pour :
+  - gÃ©rer davantage de cas mÃ©tier,
   - forcer des conventions de nommage,
   - proposer des explications textuelles en plus du pipeline JSON.
-- Aujourd'hui, la clé Groq est définie en dur dans le code : une gestion par variables d'environnement serait plus adaptée en production.
+- Aujourd'hui, la clÃ© Groq est dÃ©finie en dur dans le code : une gestion par variables d'environnement serait plus adaptÃ©e en production.
 
 ---
 
 ##  Licence
 
-Ce projet est réalisé dans un cadre pédagogique.
+Ce projet est rÃ©alisÃ© dans un cadre pÃ©dagogique.
 
 ```
 Copyright (c) 2025 
 
-Utilisation autorisée à des fins pédagogiques et de démonstration.
-Toute réutilisation ou diffusion extérieure doit être validée par l'auteur.
+Utilisation autorisÃ©e Ã© des fins pÃ©dagogiques et de dÃ©monstration.
+Toute rÃ©utilisation ou diffusion extÃ©rieure doit Ã©tre validÃ©e par l'auteur.
 ```
