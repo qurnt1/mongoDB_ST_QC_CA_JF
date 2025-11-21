@@ -15,10 +15,6 @@ from groq import Groq
 from dotenv import load_dotenv
 
 
-# TODO_REFAC : Imports regroupés (standard / tiers) et typage enrichi pour faciliter la lecture et les annotations.
-# TODO_REFAC : Les constantes de polices/couleurs inutilisées ont été supprimées pour réduire le bruit dans la configuration.
-
-
 DOSSIER_DATA = "data"
 DOSSIER_SQLITE = "sqlite"
 DB_FILE = os.path.join(DOSSIER_DATA, DOSSIER_SQLITE, "db", "paris2055.sqlite")
@@ -71,9 +67,6 @@ RÈGLES STRICTES DE GÉNÉRATION :
     }
 """
 
-# TODO_REFAC : SCHEMA_CONTEXT conservé tel quel car il fait partie du contrat avec Groq (prompt système).
-
-
 MIGRATION_LOG_PLACEHOLDER: Optional[st.delta_generator.DeltaGenerator] = None
 MAX_LOG_LINES = 300
 
@@ -81,9 +74,6 @@ MAX_LOG_LINES = 300
 # =====================================================================
 # UTILITAIRES GENERAUX
 # =====================================================================
-
-# TODO_REFAC : Section utilitaires centralisée pour regrouper les fonctions de bas niveau utilisées par tout le module.
-
 
 def enregistrer_resultats_csv(
     lien_dossier: str,
@@ -235,9 +225,6 @@ def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
 # CONNECTIVITE MONGODB ET LOGS
 # =====================================================================
 
-# TODO_REFAC : La logique de vérification MongoDB est isolée pour être réutilisée dans l'IHM et les traitements.
-
-
 def check_connexion_details() -> tuple[bool, bool]:
     """
     Vérifie l'état du serveur MongoDB et la présence de la base Paris2055.
@@ -314,9 +301,6 @@ def log_progress(
 # =====================================================================
 # TRANSFORMATION DATAFRAME -> DOCUMENTS + SAUVEGARDE JSON / MONGO
 # =====================================================================
-
-# TODO_REFAC : Cette section regroupe les opérations génériques de transformation et de persistance (JSON et MongoDB).
-
 
 def dataframe_to_dict_progressive(
     df: pd.DataFrame,
@@ -468,9 +452,6 @@ def insert_with_progress(
 # =====================================================================
 # CHARGEMENT DES TABLES SQLITE ET CONSTRUCTION DES DOCUMENTS METIER
 # =====================================================================
-
-# TODO_REFAC : Les fonctions de construction de documents sont regroupées afin de clarifier le flux ETL.
-
 
 def load_tables(
     conn: sqlite3.Connection,
@@ -1191,9 +1172,6 @@ def build_capteurs_docs(
 # ORCHESTRATION MIGRATION SQLITE -> MONGODB
 # =====================================================================
 
-# TODO_REFAC : L'orchestrateur ETL centralise toutes les étapes et réutilise les helpers de transformation/sauvegarde.
-
-
 def creer_index_mongodb(
     db: pymongo.database.Database,
     log_fn: Callable[[str, bool], None],
@@ -1226,8 +1204,7 @@ def creer_index_mongodb(
         db.quartiers.create_index([("geom", "2dsphere")])
         db.capteurs.create_index([("position", "2dsphere")])
 
-        # TODO_REFAC : L'index sur une collection 'arrets' autonome a été supprimé,
-        #              le nouveau modèle stockant les arrêts imbriqués dans 'lignes'
+        #            le nouveau modèle stockant les arrêts imbriqués dans 'lignes'
         #              et 'quartiers'. Cela évite de créer une collection vide.
         log_fn("[Index] Index créés avec succès.", replace_last=False)
     except Exception as exc:
@@ -1398,9 +1375,6 @@ def migrer_sqlite_vers_mongo(
 # =====================================================================
 # REQUETES SQL (PARTIE 1) ET CACHE CSV
 # =====================================================================
-
-# TODO_REFAC : Section dédiée aux requêtes SQL initiales et à leur mise en cache pour le front Streamlit.
-
 
 REQUETES_OBJECTIFS: Dict[str, str] = {
     "A": (
@@ -1743,9 +1717,6 @@ def charger_cache_csv_mongo() -> tuple[Dict[str, pd.DataFrame], bool]:
 # =====================================================================
 # REQUETES MONGODB (PARTIE 3)
 # =====================================================================
-
-# TODO_REFAC : Les requêtes A -> N ont été regroupées dans un dictionnaire pour permettre une exécution itérative générique.
-
 
 def query_A_mongo(db) -> pd.DataFrame:
     """
@@ -2681,8 +2652,7 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
         résultat. En cas d'erreur globale de connexion, toutes les
         entrées contiendront un DataFrame avec une colonne 'erreur'.
     """
-    # TODO_REFAC : Fusion des deux implémentations précédentes d'execution
-    #              des requêtes Mongo en une version unique, robuste aux
+    #            des requêtes Mongo en une version unique, robuste aux
     #              problèmes de connexion (ping + base absente).
     client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     resultats: Dict[str, pd.DataFrame] = {}
@@ -2729,8 +2699,7 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
 # ETAT ET COMPOSANTS STREAMLIT
 # =====================================================================
 
-# TODO_REFAC : La partie IHM est regroupée en fonctions dédiées pour clarifier la frontière
-#              entre logique métier (ETL / requêtes) et présentation.
+#            entre logique métier (ETL / requêtes) et présentation.
 
 
 # Création des dossiers nécessaires au démarrage de l'application.
@@ -2765,7 +2734,7 @@ def init_session_state() -> None:
     st.session_state["migration_done_msg"] = ""
     st.session_state["migration_running"] = False
     
-    # NOUVELLES VARIABLES D'ÉTAT POUR LA PARTIE 5
+    # NOUVELLES VARIABLES D'ÉTAT POUR LA Partie 6
     st.session_state["ai_json_response"] = None 
     # Clé utilisée par le paramètre 'value' du st.text_area pour afficher le contenu
     st.session_state["ai_question_text_value"] = ""
@@ -2835,7 +2804,7 @@ def render_partie_1_sqlite(tab) -> None:
         if not st.session_state["queries_sql_executed"]:
             st.info(
                 "Les résultats ne sont pas encore disponibles. "
-                "Clique sur « Executer Requetes » pour lancer les requêtes.",
+                "Cliquez sur « Executer Requetes » pour lancer les requêtes.",
             )
             return
 
@@ -3042,11 +3011,8 @@ def render_partie_4_streamlit(tab) -> None:
 
 
 # =====================================================================
-# PARTIE 5 : ASSISTANT IA GROQ / LLAMA3
+# Partie 6 : ASSISTANT IA GROQ / LLAMA3
 # =====================================================================
-
-# TODO_REFAC : L'interfaçage avec Groq est encapsulé pour isoler les dépendances externes.
-
 
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
     """
@@ -3089,21 +3055,19 @@ def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
     except Exception as exc:
         return None, str(exc)
 
-def render_partie_5_ia(tab) -> None:
+def render_partie_6_ia(tab) -> None:
     """
-    Affiche la Partie 5 : assistant IA pilotant la génération de requêtes
+    Affiche la Partie 6 : assistant IA pilotant la génération de requêtes
     MongoDB via Groq / Llama 3.
     """
     QUESTION_BUTTONS = [
-        "Calculer la moyenne des retards (en minutes) pour chaque ligne de transport, triée par ordre décroissant.",
+        "la moyenne des retards (en minutes) pour chaque ligne de transport.",
 
-        "Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.",
+        "le nombre moyen de passagers transportés par jour pour chaque ligne.",
 
-        "Calculer le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
+        "le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
 
-        "Identifier la moyenne d'émission de CO2 (captée aux arrêts) associée aux véhicules, triée par ordre décroissant.",
-
-        "Trouver les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts."
+        "les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts."
     ]
 
     # Initialisation de l'état pour la réponse JSON de l'IA
@@ -3111,7 +3075,7 @@ def render_partie_5_ia(tab) -> None:
         st.session_state["ai_json_response"] = None
 
     with tab:
-        st.subheader("Partie 5 : Assistant IA 🤖 (Powered by Groq/Llama3)")
+        st.subheader("Partie 6 : Assistant IA 🤖 (Powered by Groq/Llama3)")
         st.markdown(
             "Posez n'importe quelle question sur vos données. "
             "L'IA va générer la requête MongoDB complexe pour vous.",
@@ -3257,42 +3221,77 @@ def main() -> None:
     with st.sidebar:
         st.header("📡 État du Système")
 
+        # --- 1. VÉRIFICATION SQLITE (SOURCE) ---
+        if os.path.exists(DB_FILE):
+            st.success("Source SQLite : **Trouvée**", icon="📄")
+        else:
+            st.error("Source SQLite : **Introuvable**", icon="❌")
+
+        st.markdown("---")
+
+        # --- 2. VÉRIFICATION MONGODB (CIBLE) ---
         server_ok, db_ok = check_connexion_details()
 
         if server_ok:
             st.success("Serveur MongoDB : **Connecté**", icon="✅")
+            
+            if db_ok:
+                # --- LOGIQUE D'INSPECTION DU CONTENU ---
+                try:
+                    # On ouvre une connexion temporaire pour compter
+                    temp_client = pymongo.MongoClient(MONGO_URI)
+                    temp_db = temp_client[MONGO_DB_NAME]
+                    
+                    # Liste des collections attendues
+                    cols_to_check = ["lignes", "quartiers", "capteurs"]
+                    details = []
+                    is_empty = True
+                    
+                    for col_name in cols_to_check:
+                        count = temp_db[col_name].count_documents({})
+                        if count > 0:
+                            is_empty = False
+                            details.append(f"▪️ **{col_name}** : {count} docs \n")
+                        else:
+                            details.append(f"▪️ **{col_name}** : ⚠️ 0 doc \n")
+                    
+                    temp_client.close()
+
+                    # Affichage conditionnel selon le contenu
+                    if is_empty:
+                        st.warning(f"Base '{MONGO_DB_NAME}' : **Vide**", icon="📭")
+                    else:
+                        st.success(f"Base '{MONGO_DB_NAME}' : **Remplie**", icon="🍃")
+                    
+                    # Affichage des détails dans un petit menu déroulant pour ne pas surcharger
+                    with st.expander("Voir le contenu"):
+                        st.markdown("\n".join(details))
+
+                except Exception:
+                    st.warning("Base existante (Lecture impossible)", icon="⚠️")
+            else:
+                st.warning(f"Base '{MONGO_DB_NAME}' : **Manquante**", icon="❌")
         else:
             st.error("Serveur MongoDB : **Déconnecté**", icon="❌")
 
-        if server_ok:
-            if db_ok:
-                st.success(
-                    f"Base '{MONGO_DB_NAME}' : **Trouvée**",
-                    icon="🗄️",
-                )
-            else:
-                st.warning(
-                    f"Base '{MONGO_DB_NAME}' : **Vide/Inconnue**",
-                    icon="⚠️",
-                )
-
+        # --- 3. CACHE ---
         if st.session_state.get("queries_sql_executed", False):
-            st.success("Cache SQL : **Chargé**", icon="💾")
+            st.success("Cache des requêtes SQL : **Chargé**", icon="💾")
         else:
-            st.info("Cache SQL : **En attente**", icon="⏳")
+            st.info("Cache des requêtes SQL : **Vide**", icon="⚪")
 
         st.markdown("---")
-        st.caption("Paris 2055 Dashboard v1.0")
 
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "Partie 1 : SQL",
             "Partie 2 : Migration",
             "Partie 3 : Mongo",
             "Partie 4 : Dashboard",
-            "Partie 5 : Assistant IA 🤖",
+            "Partie 5 : Comparaison résultats SQL vs Mongo",
+            "Partie 6 : Assistant IA 🤖",
         ],
     )
 
@@ -3300,7 +3299,8 @@ def main() -> None:
     render_partie_2_migration(tab2)
     render_partie_3_mongo(tab3)
     render_partie_4_streamlit(tab4)
-    render_partie_5_ia(tab5)
+    render_partie_5_comparaison(tab5)
+    render_partie_6_ia(tab6)
 
 
 if __name__ == "__main__":
