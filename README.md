@@ -159,7 +159,12 @@ paris2055/
 
 ```bash
 git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
+
+# Déplacer dans le dossier
 cd mongoDB_ST_QC_CA_JF
+
+# Installation des dépendances
+pip install -r requirements.txt
 
 # Création de l'environnement virtuel (recommandé)
 python -m venv venv
@@ -170,8 +175,6 @@ venv\Scripts\activate
 # Mac / Linux
 source venv/bin/activate
 
-# Installation des dépendances
-pip install -r requirements.txt
 ```
 
 ### 3. Configuration
