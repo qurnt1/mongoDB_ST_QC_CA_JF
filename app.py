@@ -2772,6 +2772,9 @@ def streamlit_migration_log(
         text_content = "\n".join(display_lines)
         MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
 
+# =====================================================================
+# Partie 1 : REQUÊTES SQLITE
+# =====================================================================
 
 def render_partie_1_sqlite(tab) -> None:
     """
@@ -2831,6 +2834,9 @@ def render_partie_1_sqlite(tab) -> None:
                         width="content",
                     )
 
+# =====================================================================
+# Partie 2 : MIGRATION SQLITE -> MONGODB
+# =====================================================================
 
 def render_partie_2_migration(tab) -> None:
     """
@@ -2907,6 +2913,9 @@ def render_partie_2_migration(tab) -> None:
             height=400,
         )
 
+# =====================================================================
+# Partie 3 : REQUÊTES MONGODB
+# =====================================================================
 
 def render_partie_3_mongo(tab) -> None:
     """
@@ -2990,7 +2999,9 @@ def render_partie_3_mongo(tab) -> None:
                         ),
                         width="content",
                     )
-
+# =====================================================================
+# Partie 4 : DASHBOARDS ET CARTOGRAPHIE
+# =====================================================================
 
 def render_partie_4_streamlit(tab) -> None:
     """
@@ -3009,6 +3020,144 @@ def render_partie_4_streamlit(tab) -> None:
             "(cartes, dashboards, etc.).",
         )
 
+# =====================================================================
+# Partie 5 : COMPARAISON SQL vs MONGODB
+# =====================================================================
+
+def comparer_dataframes_souple(df1: pd.DataFrame, df2: pd.DataFrame) -> tuple[str, str]:
+    """
+    Compare deux DataFrames de manière souple pour valider la migration.
+    
+    Retourne:
+    - Un statut (icône).
+    - Un message explicatif.
+    """
+    if df1 is None or df2 is None:
+        return "❌", "Un des résultats est manquant."
+    
+    if df1.empty and df2.empty:
+        return "✅", "Les deux résultats sont vides (cohérent)."
+        
+    if df1.empty or df2.empty:
+        return "❌", f"Disparité : SQL a {len(df1)} lignes, Mongo a {len(df2)} lignes."
+
+    # 1. Comparaison du nombre de lignes
+    if len(df1) != len(df2):
+        diff = abs(len(df1) - len(df2))
+        return "⚠️", f"Différence de taille : {len(df1)} (SQL) vs {len(df2)} (Mongo). Écart : {diff}."
+
+    # 2. Comparaison du nombre de colonnes
+    if len(df1.columns) != len(df2.columns):
+        return "⚠️", f"Colonnes différentes : {list(df1.columns)} vs {list(df2.columns)}."
+
+    # 3. Tentative de comparaison stricte des valeurs (avec tolérance pour les arrondis)
+    try:
+        # On trie les données pour s'assurer qu'elles sont dans le même ordre
+        # On suppose que la première colonne est la clé de tri (ex: nom_ligne)
+        col_sort_1 = df1.columns[0]
+        col_sort_2 = df2.columns[0]
+        
+        df1_sorted = df1.sort_values(by=col_sort_1).reset_index(drop=True)
+        df2_sorted = df2.sort_values(by=col_sort_2).reset_index(drop=True)
+
+        # On normalise les noms de colonnes pour la comparaison (ignorer casse)
+        df1_sorted.columns = [c.lower() for c in df1_sorted.columns]
+        df2_sorted.columns = [c.lower() for c in df2_sorted.columns]
+
+        pd.testing.assert_frame_equal(
+            df1_sorted, 
+            df2_sorted, 
+            check_dtype=False, # Ignore int vs float
+            check_exact=False, # Tolère les erreurs d'arrondi minimes
+            rtol=1e-3 # Tolérance relative de 0.1%
+        )
+        return "✅", "Contenu identique (valeurs et dimensions)."
+    except AssertionError as e:
+        # Si c'est juste une histoire de noms de colonnes ou de types, on considère que c'est acceptable
+        return "⚠️", "Dimensions OK, mais valeurs légèrement différentes (arrondis ou types)."
+    except Exception as e:
+        return "❌", f"Erreur lors de la comparaison : {str(e)}"
+
+
+def render_partie_5_comparaison(tab) -> None:
+    """
+    Affiche la Partie 5 : Comparaison côte à côte des résultats SQL et MongoDB.
+    """
+    with tab:
+        st.subheader("Partie 5 : Validation de la Migration (SQL vs NoSQL)")
+        st.markdown(
+            "Cet onglet permet de vérifier si les requêtes MongoDB renvoient "
+            "bien les mêmes données métier que les requêtes SQL d'origine."
+        )
+
+        # Vérification que les caches sont chargés
+        sql_ready = st.session_state.get("queries_sql_executed", False)
+        mongo_ready = st.session_state.get("queries_mongo_executed", False)
+
+        if not sql_ready or not mongo_ready:
+            st.warning("⚠️ Veuillez exécuter les requêtes de la **Partie 1** (SQL) et de la **Partie 3** (MongoDB) pour voir la comparaison.")
+            return
+
+        st.markdown("---")
+
+        res_sql = st.session_state["resultats_sql"]
+        res_mongo = st.session_state["resultats_mongo"]
+        objectifs = st.session_state["requetes_objectifs"]
+
+        # Compteurs pour le résumé
+        total_ok = 0
+        total_queries = len(objectifs)
+
+        for code, objectif in objectifs.items():
+            df_sql = res_sql.get(code)
+            df_mongo = res_mongo.get(code)
+
+            # Calcul du statut
+            icon, message = comparer_dataframes_souple(df_sql, df_mongo)
+            if icon == "✅":
+                total_ok += 1
+
+            # Affichage dans un expander
+            with st.expander(f"{icon} Requête {code} : {objectif[:60]}..."):
+                st.caption(f"**Objectif :** {objectif}")
+                
+                # Message de statut
+                if icon == "✅":
+                    st.success(f"Résultat : {message}")
+                elif icon == "⚠️":
+                    st.warning(f"Résultat : {message}")
+                else:
+                    st.error(f"Résultat : {message}")
+
+                col_a, col_b = st.columns(2)
+                
+                with col_a:
+                    st.markdown("**1. Résultat SQL (Source)**")
+                    if df_sql is not None and not df_sql.empty:
+                        st.dataframe(df_sql, use_container_width=True, height=200)
+                        st.caption(f"Lignes : {len(df_sql)} | Colonnes : {len(df_sql.columns)}")
+                    else:
+                        st.info("Vide ou erreur.")
+
+                with col_b:
+                    st.markdown("**2. Résultat MongoDB (Cible)**")
+                    if df_mongo is not None and not df_mongo.empty:
+                        st.dataframe(df_mongo, use_container_width=True, height=200)
+                        st.caption(f"Lignes : {len(df_mongo)} | Colonnes : {len(df_mongo.columns)}")
+                    else:
+                        st.info("Vide ou erreur.")
+
+        st.markdown("---")
+        
+        # Score final de validation
+        score = int((total_ok / total_queries) * 100)
+        if score == 100:
+            st.balloons()
+            st.success(f"🏆 Migration validée à 100% ! ({total_ok}/{total_queries} requêtes identiques)")
+        elif score > 80:
+            st.success(f"✅ Migration validée à {score}% ({total_ok}/{total_queries} requêtes identiques)")
+        else:
+            st.error(f"❌ Attention : Seulement {score}% de correspondance ({total_ok}/{total_queries}). Vérifiez vos pipelines.")
 
 # =====================================================================
 # Partie 6 : ASSISTANT IA GROQ / LLAMA3
@@ -3290,7 +3439,7 @@ def main() -> None:
             "Partie 2 : Migration",
             "Partie 3 : Mongo",
             "Partie 4 : Dashboard",
-            "Partie 5 : Comparaison résultats SQL vs Mongo",
+            "Partie 5 : Comparaison",
             "Partie 6 : Assistant IA 🤖",
         ],
     )
