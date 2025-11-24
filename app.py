@@ -500,14 +500,14 @@ def load_tables(
     )
     return tables
 
-
 def build_lignes_docs(
     tables: Dict[str, pd.DataFrame],
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents de la collection MongoDB 'lignes'.
-    VERSION CORRIGÉE V4 : Ajout de id_ligne_officielle dans les véhicules.
+    Construit les documents 'lignes'.
+    CORRECTIF MAJEUR : Injection explicite de 'nom_chauffeur' dans le cache 
+    'vehicules_cache' pour permettre une concordance parfaite avec SQL (Requête K).
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -519,393 +519,161 @@ def build_lignes_docs(
     df_t = tables["Trafic"]
     df_i = tables["Incident"]
     df_cap = tables["Capteur"]
+    df_mes = tables["Mesure"]
 
+    # 1. Pré-calcul CO2
+    log_fn("⚡ [OPTIM] Pré-calcul des moyennes CO2 par ligne...", replace_last=False)
+    co2_by_ligne: Dict[int, float] = {}
+    if not df_cap.empty and not df_mes.empty:
+        df_full = df_cap.merge(df_mes, on="id_capteur")
+        df_co2 = df_full[df_full["type_capteur"] == "CO2"]
+        df_co2_ligne = df_co2.merge(df_a[["id_arret", "id_ligne"]], on="id_arret")
+        if not df_co2_ligne.empty:
+            co2_by_ligne = df_co2_ligne.groupby("id_ligne")["valeur"].mean().to_dict()
+
+    # 2. Cache Véhicules avec Chauffeurs (C'EST ICI QUE TOUT CHANGE)
+    log_fn("⚡ [OPTIM] Construction du cache Véhicules avec Chauffeurs...", replace_last=False)
+    vehicules_cache_by_ligne: Dict[int, List[Dict]] = {}
+    
+    if not df_v.empty:
+        # On joint les véhicules avec les chauffeurs AVANT de créer le cache.
+        # Cela permet d'avoir le nom du chauffeur associé au véhicule de manière statique,
+        # exactement comme le fait une jointure SQL (Vehicle JOIN Chauffeur).
+        df_v_merged = df_v.merge(df_c, on="id_chauffeur", how="left")
+        
+        col_ligne_v = "id_ligne" if "id_ligne" in df_v_merged.columns else None
+        
+        if col_ligne_v:
+            for id_ligne, group in df_v_merged.groupby(col_ligne_v):
+                if pd.isna(id_ligne): continue
+                v_list = []
+                for _, v_row in group.iterrows():
+                    v_doc = {
+                        "id_vehicule": int(v_row["id_vehicule"]),
+                        "immatriculation": v_row.get("immatriculation"),
+                        "type_vehicule": v_row.get("type_vehicule"),
+                        # CORRECTION : On stocke le nom du chauffeur ici même s'il n'a pas d'horaire
+                        "nom_chauffeur": v_row.get("nom") if pd.notnull(v_row.get("nom")) else None
+                    }
+                    v_list.append(v_doc)
+                vehicules_cache_by_ligne[int(id_ligne)] = v_list
+
+    # 3. Préparations standards (Quartiers)
     quartiers_by_arret: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
-        log_fn(
-            "Running : Groupement Quartiers par arrêt...",
-            replace_last=False,
-        )
-        tmp = df_aq.merge(
-            df_q[["id_quartier", "nom"]].rename(
-                columns={"nom": "nom_quartier"},
-            ),
-            on="id_quartier",
-            how="left",
-        )
-        groups = tmp.groupby("id_arret")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Quartiers/Arrêts", log_fn)
-
-        for idx, (id_arret, group) in enumerate(groups, start=1):
-            subset = group[
-                [
-                    "id_quartier",
-                    "nom_quartier",
-                ]
-            ].drop_duplicates("id_quartier")
+        tmp = df_aq.merge(df_q[["id_quartier", "nom"]].rename(columns={"nom": "nom_quartier"}), on="id_quartier", how="left")
+        for id_arret, group in tmp.groupby("id_arret"):
+            subset = group[["id_quartier", "nom_quartier"]].drop_duplicates("id_quartier")
             quartiers_by_arret[id_arret] = [
-                {
-                    "id_quartier": int(row["id_quartier"]),
-                    "nom": row["nom_quartier"],
-                }
-                for _, row in subset.iterrows()
-                if pd.notnull(row["id_quartier"])
+                {"id_quartier": int(row["id_quartier"]), "nom": row["nom_quartier"]}
+                for _, row in subset.iterrows() if pd.notnull(row["id_quartier"])
             ]
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Quartiers/Arrêts",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
 
+    # 3b. Préparations standards (Capteurs)
     capteurs_ids_by_arret: Dict[int, List[int]] = {}
     if not df_cap.empty:
-        log_fn(
-            "Running : Groupement Capteurs par arrêt...",
-            replace_last=False,
-        )
-        groups = df_cap.groupby("id_arret")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Capteurs/Arrêts", log_fn)
+        for id_arret, group in df_cap.groupby("id_arret"):
+            capteurs_ids_by_arret[id_arret] = [int(v) for v in group["id_capteur"].dropna().unique().tolist()]
 
-        for idx, (id_arret, group) in enumerate(groups, start=1):
-            ids = [
-                int(value)
-                for value in group["id_capteur"].dropna().unique().tolist()
-            ]
-            capteurs_ids_by_arret[id_arret] = ids
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Capteurs/Arrêts",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
-
+    # 3c. Construction Horaires avec id_ligne_officielle
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
-        log_fn(
-            "Running : Jointure Horaire/Vehicule/Chauffeur...",
-            replace_last=False,
-        )
-        
-        # --- MODIFICATION START ---
-        # On renomme id_ligne dans Vehicule pour ne pas perdre l'info lors du merge
-        # et pouvoir l'injecter comme "id_ligne_officielle"
+        # On renomme id_ligne du véhicule pour ne pas le confondre plus tard
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
-
-        df_h_full = df_h.merge(
-            df_v_clean,
-            on="id_vehicule",
-            how="left",
-            suffixes=("", "_vehicule"),
-        )
-        # --- MODIFICATION END ---
-        
-        df_h_full = df_h_full.merge(
-            df_c,
-            on="id_chauffeur",
-            how="left",
-            suffixes=("", "_chauffeur"),
-        )
+        df_h_full = df_h.merge(df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule"))
+        df_h_full = df_h_full.merge(df_c, on="id_chauffeur", how="left", suffixes=("", "_chauffeur"))
 
         for col in ("heure_prevue", "heure_effective", "date_embauche"):
             if col in df_h_full.columns:
-                df_h_full[col] = pd.to_datetime(
-                    df_h_full[col],
-                    errors="coerce",
-                )
+                df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
 
         total_rows = len(df_h_full)
-        label = "Groupement Horaires/Arrêts"
-        log_progress(0, total_rows, label, log_fn)
+        log_progress(0, total_rows, "Groupement Horaires/Arrêts", log_fn)
 
         for idx, row in enumerate(df_h_full.itertuples(index=False), start=1):
-            if pd.isna(row.id_arret):
-                continue
-
-            id_arret = int(row.id_arret)
-
-            vehicule: Dict[str, object] = {}
-            if (
-                getattr(row, "id_vehicule", None) is not None
-                and not pd.isna(row.id_vehicule)
-            ):
-                vehicule["id_vehicule"] = int(row.id_vehicule)
+            if pd.isna(row.id_arret): continue
             
-            # --- MODIFICATION START ---
-            # Ajout de l'ID de ligne officielle
-            if (
-                hasattr(row, "id_ligne_officielle")
-                and row.id_ligne_officielle is not None
-                and not pd.isna(row.id_ligne_officielle)
-            ):
-                vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
-            # --- MODIFICATION END ---
+            vehicule = {}
+            if getattr(row, "id_vehicule", None) is not None and not pd.isna(row.id_vehicule):
+                vehicule["id_vehicule"] = int(row.id_vehicule)
+                if hasattr(row, "immatriculation") and pd.notnull(row.immatriculation):
+                    vehicule["immatriculation"] = row.immatriculation
+                if hasattr(row, "type_vehicule") and pd.notnull(row.type_vehicule):
+                    vehicule["type_vehicule"] = row.type_vehicule
+                
+                # On garde l'ID officiel pour les requêtes type "Est-ce le bon véhicule sur la bonne ligne ?"
+                if hasattr(row, "id_ligne_officielle") and pd.notnull(row.id_ligne_officielle):
+                    vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
 
-            if (
-                hasattr(row, "immatriculation")
-                and row.immatriculation is not None
-                and not pd.isna(row.immatriculation)
-            ):
-                vehicule["immatriculation"] = row.immatriculation
-            if (
-                hasattr(row, "type_vehicule")
-                and row.type_vehicule is not None
-                and not pd.isna(row.type_vehicule)
-            ):
-                vehicule["type_vehicule"] = row.type_vehicule
-            if (
-                hasattr(row, "capacite")
-                and row.capacite is not None
-                and not pd.isna(row.capacite)
-            ):
-                vehicule["capacite"] = int(row.capacite)
-
-            chauffeur: Dict[str, object] = {}
-            if (
-                hasattr(row, "id_chauffeur")
-                and row.id_chauffeur is not None
-                and not pd.isna(row.id_chauffeur)
-            ):
+            chauffeur = {}
+            if hasattr(row, "id_chauffeur") and pd.notnull(row.id_chauffeur):
                 chauffeur["id_chauffeur"] = int(row.id_chauffeur)
-                if (
-                    hasattr(row, "nom")
-                    and row.nom is not None
-                    and not pd.isna(row.nom)
-                ):
+                if hasattr(row, "nom") and pd.notnull(row.nom):
                     chauffeur["nom"] = row.nom
-                if (
-                    hasattr(row, "date_embauche")
-                    and row.date_embauche is not None
-                    and not pd.isna(row.date_embauche)
-                    and isinstance(row.date_embauche, pd.Timestamp)
-                ):
-                    chauffeur["date_embauche"] = (
-                        row.date_embauche.to_pydatetime()
-                    )
+            
+            if chauffeur: vehicule["chauffeur"] = chauffeur
 
-            if chauffeur:
-                vehicule["chauffeur"] = chauffeur
-
-            horaire_doc: Dict[str, object] = {}
-            if (
-                hasattr(row, "id_horaire")
-                and row.id_horaire is not None
-                and not pd.isna(row.id_horaire)
-            ):
-                horaire_doc["id_horaire"] = int(row.id_horaire)
-            if (
-                hasattr(row, "heure_prevue")
-                and row.heure_prevue is not None
-                and not pd.isna(row.heure_prevue)
-                and isinstance(row.heure_prevue, pd.Timestamp)
-            ):
-                horaire_doc["heure_prevue"] = row.heure_prevue.to_pydatetime()
-            if (
-                hasattr(row, "heure_effective")
-                and row.heure_effective is not None
-                and not pd.isna(row.heure_effective)
-                and isinstance(row.heure_effective, pd.Timestamp)
-            ):
-                horaire_doc["heure_effective"] = (
-                    row.heure_effective.to_pydatetime()
-                )
-            if (
-                hasattr(row, "passagers_estimes")
-                and row.passagers_estimes is not None
-                and not pd.isna(row.passagers_estimes)
-            ):
-                horaire_doc["passagers_estimes"] = int(row.passagers_estimes)
-
-            if vehicule:
-                horaire_doc["vehicule"] = vehicule
-
-            horaires_by_arret.setdefault(id_arret, []).append(horaire_doc)
-
-            if (idx % 5000 == 0) or (idx == total_rows):
-                log_progress(idx, total_rows, label, log_fn)
-
+            horaire = {}
+            if hasattr(row, "id_horaire") and pd.notnull(row.id_horaire): horaire["id_horaire"] = int(row.id_horaire)
+            if hasattr(row, "heure_prevue") and pd.notnull(row.heure_prevue): horaire["heure_prevue"] = row.heure_prevue.to_pydatetime()
+            if hasattr(row, "passagers_estimes") and pd.notnull(row.passagers_estimes): horaire["passagers_estimes"] = int(row.passagers_estimes)
+            
+            if vehicule: horaire["vehicule"] = vehicule
+            
+            horaires_by_arret.setdefault(int(row.id_arret), []).append(horaire)
+            
+            if idx % 5000 == 0: log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
         log_fn("", replace_last=False)
 
+    # 4. Suite (Arrets, Trafic...)
     arrets_by_ligne: Dict[int, List[Dict]] = {}
-    total_arrets = len(df_a)
-    label_arrets = "Construction Arrêts -> Lignes"
-    log_progress(0, total_arrets, label_arrets, log_fn)
-
-    for idx, (_, row) in enumerate(df_a.iterrows(), start=1):
-        if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]):
-            continue
-
-        id_arret = int(row["id_arret"])
-        id_ligne = int(row["id_ligne"])
-
-        arret_doc: Dict[str, object] = {
-            "id_arret": id_arret,
-            "nom": row["nom"],
-        }
-
-        latitude = row.get("latitude")
-        longitude = row.get("longitude")
-        if pd.notnull(latitude) and pd.notnull(longitude):
-            arret_doc["position"] = {
-                "type": "Point",
-                "coordinates": [float(longitude), float(latitude)],
-            }
-
-        quartiers = quartiers_by_arret.get(id_arret)
-        if quartiers:
-            arret_doc["quartiers"] = quartiers
-
-        capteurs_ids = capteurs_ids_by_arret.get(id_arret)
-        if capteurs_ids:
-            arret_doc["capteurs_ids"] = capteurs_ids
-
-        horaires = horaires_by_arret.get(id_arret)
-        if horaires:
-            arret_doc["horaires"] = horaires
-
-        arrets_by_ligne.setdefault(id_ligne, []).append(arret_doc)
-
-        if (idx % 500 == 0) or (idx == total_arrets):
-            log_progress(idx, total_arrets, label_arrets, log_fn)
-
-    log_fn("", replace_last=False)
-
-    incidents_by_trafic: Dict[int, List[Dict]] = {}
-    if not df_i.empty:
-        log_fn(
-            "Running : Groupement Incidents par trafic...",
-            replace_last=False,
-        )
-        groups = df_i.groupby("id_trafic")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Incidents/Trafic", log_fn)
-
-        for idx, (id_trafic, group) in enumerate(groups, start=1):
-            inc_list: List[Dict] = []
-            for _, incident_row in group.iterrows():
-                incident_doc: Dict[str, object] = {}
-                if (
-                    "id_incident" in incident_row
-                    and pd.notnull(incident_row["id_incident"])
-                ):
-                    incident_doc["id_incident"] = int(
-                        incident_row["id_incident"],
-                    )
-                if (
-                    "description" in incident_row
-                    and pd.notnull(incident_row["description"])
-                ):
-                    incident_doc["description"] = incident_row["description"]
-                if (
-                    "gravite" in incident_row
-                    and pd.notnull(incident_row["gravite"])
-                ):
-                    incident_doc["gravite"] = int(incident_row["gravite"])
-                if (
-                    "horodatage" in incident_row
-                    and pd.notnull(incident_row["horodatage"])
-                ):
-                    incident_datetime = to_datetime(
-                        incident_row["horodatage"],
-                    )
-                    if incident_datetime is not None:
-                        incident_doc["horodatage"] = incident_datetime
-
-                inc_list.append(incident_doc)
-
-            incidents_by_trafic[id_trafic] = inc_list
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Incidents/Trafic",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
+    for _, row in df_a.iterrows():
+        if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]): continue
+        id_l, id_a = int(row["id_ligne"]), int(row["id_arret"])
+        adoc = {"id_arret": id_a, "nom": row["nom"]}
+        if id_a in quartiers_by_arret: adoc["quartiers"] = quartiers_by_arret[id_a]
+        if id_a in capteurs_ids_by_arret: adoc["capteurs_ids"] = capteurs_ids_by_arret[id_a]
+        if id_a in horaires_by_arret: adoc["horaires"] = horaires_by_arret[id_a]
+        arrets_by_ligne.setdefault(id_l, []).append(adoc)
 
     trafic_by_ligne: Dict[int, List[Dict]] = {}
+    incidents_by_trafic = {} 
+    if not df_i.empty:
+        for id_trafic, group in df_i.groupby("id_trafic"):
+            incidents_by_trafic[id_trafic] = group[["id_incident", "description", "gravite"]].to_dict("records")
+            
     if not df_t.empty:
-        total_trafic = len(df_t)
-        label_trafic = "Preparation Trafic par Ligne"
-        log_progress(0, total_trafic, label_trafic, log_fn)
+        for _, row in df_t.iterrows():
+            if pd.isna(row["id_ligne"]): continue
+            tdoc = {"id_trafic": int(row["id_trafic"])}
+            if pd.notnull(row.get("retard_minutes")): tdoc["retard_minutes"] = int(row["retard_minutes"])
+            if row["id_trafic"] in incidents_by_trafic: tdoc["incidents"] = incidents_by_trafic[row["id_trafic"]]
+            trafic_by_ligne.setdefault(int(row["id_ligne"]), []).append(tdoc)
 
-        for idx, (_, row) in enumerate(df_t.iterrows(), start=1):
-            if pd.isna(row["id_ligne"]) or pd.isna(row["id_trafic"]):
-                continue
-
-            id_ligne = int(row["id_ligne"])
-            id_trafic = int(row["id_trafic"])
-
-            trafic_doc: Dict[str, object] = {"id_trafic": id_trafic}
-
-            if "horodatage" in row and pd.notnull(row["horodatage"]):
-                dt_trafic = to_datetime(row["horodatage"])
-                if dt_trafic is not None:
-                    trafic_doc["horodatage"] = dt_trafic
-
-            if "retard_minutes" in row and pd.notnull(row["retard_minutes"]):
-                trafic_doc["retard_minutes"] = int(row["retard_minutes"])
-
-            if "evenement" in row and pd.notnull(row["evenement"]):
-                trafic_doc["evenement"] = row["evenement"]
-
-            incidents = incidents_by_trafic.get(id_trafic)
-            if incidents:
-                trafic_doc["incidents"] = incidents
-
-            trafic_by_ligne.setdefault(id_ligne, []).append(trafic_doc)
-
-            if (idx % 2500 == 0) or (idx == total_trafic):
-                log_progress(idx, total_trafic, label_trafic, log_fn)
-
-        log_fn("", replace_last=False)
-
-    docs: List[Dict] = []
-    total_lignes = len(df_l)
-    label_final = "Construction documents lignes"
-    log_progress(0, total_lignes, label_final, log_fn)
-
+    # 5. Assemblage final
+    docs = []
+    total = len(df_l)
+    log_progress(0, total, "Assemblage Lignes", log_fn)
     for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
-        if pd.isna(row["id_ligne"]):
-            continue
-
-        id_ligne = int(row["id_ligne"])
-        doc: Dict[str, object] = {
-            "id_ligne": id_ligne,
+        if pd.isna(row["id_ligne"]): continue
+        id_l = int(row["id_ligne"])
+        doc = {
+            "id_ligne": id_l, 
             "nom_ligne": row.get("nom_ligne"),
-            "type": row.get("type"),
+            "type": row.get("type")
         }
-
-        if "frequentation_moyenne" in row and pd.notnull(
-            row["frequentation_moyenne"],
-        ):
-            try:
-                freq_value = float(row["frequentation_moyenne"])
-                doc["frequentation_moyenne"] = (
-                    int(freq_value) if freq_value.is_integer() else freq_value
-                )
-            except Exception:
-                pass
-
-        arrets = arrets_by_ligne.get(id_ligne)
-        if arrets:
-            doc["arrets"] = arrets
-
-        trafic = trafic_by_ligne.get(id_ligne)
-        if trafic:
-            doc["trafic"] = trafic
-
+        if id_l in co2_by_ligne: doc["co2_moyen_ligne"] = co2_by_ligne[id_l]
+        
+        # Injection du cache qui contient maintenant les noms des chauffeurs (CORRECTION APPLIQUÉE)
+        if id_l in vehicules_cache_by_ligne: doc["vehicules_cache"] = vehicules_cache_by_ligne[id_l]
+        
+        if id_l in arrets_by_ligne: doc["arrets"] = arrets_by_ligne[id_l]
+        if id_l in trafic_by_ligne: doc["trafic"] = trafic_by_ligne[id_l]
+        if pd.notnull(row.get("frequentation_moyenne")): doc["frequentation_moyenne"] = float(row["frequentation_moyenne"])
+        
         docs.append(doc)
-        if (idx % 100 == 0) or (idx == total_lignes):
-            log_progress(idx, total_lignes, label_final, log_fn)
+        if idx % 100 == 0: log_progress(idx, total, "Assemblage Lignes", log_fn)
 
-    log_fn("", replace_last=False)
     return docs
 
 def build_quartiers_docs(
@@ -2493,100 +2261,51 @@ def query_J_mongo(db) -> pd.DataFrame:
 
 def query_K_mongo(db) -> pd.DataFrame:
     """
-    Requête K (MongoDB).
-    SQL: nom, moyenne_retard_minutes
+    Requête K (MongoDB) - VERSION FINALE (Exactitude SQL).
+    Utilise le cache véhicule statique pour inclure même les chauffeurs sans horaires.
+    Performance : Instantanée (pas de $unwind sur les arrets/horaires).
     """
     pipeline = [
-        {
-            "$addFields": {
-                "nb_trafics": {"$size": {"$ifNull": ["$trafic", []]}},
-                "moyenne_retard_line": {
-                    "$cond": [
-                        {
-                            "$gt": [
-                                {"$size": {"$ifNull": ["$trafic", []]}},
-                                0,
-                            ],
-                        },
-                        {"$avg": "$trafic.retard_minutes"},
-                        None,
-                    ],
-                },
-            },
-        },
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-        {
-            "$project": {
-                "id_ligne": "$id_ligne",
-                "nb_trafics": 1,
-                "moyenne_retard_line": 1,
-                "chauffeur": "$arrets.horaires.vehicule.chauffeur",
-            },
-        },
-        {
-            "$match": {
-                "chauffeur.id_chauffeur": {"$ne": None},
-                "nb_trafics": {"$gt": 0},
-                "moyenne_retard_line": {"$ne": None},
-            },
-        },
-        {
-            "$group": {
-                "_id": {
-                    "id_chauffeur": "$chauffeur.id_chauffeur",
-                    "nom": "$chauffeur.nom",
-                    "id_ligne": "$id_ligne",
-                },
-                "total_trafics_line": {"$first": "$nb_trafics"},
-                "moyenne_retard_line": {"$first": "$moyenne_retard_line"},
-            },
-        },
-        {
-            "$group": {
-                "_id": {
-                    "id_chauffeur": "$_id.id_chauffeur",
-                    "nom": "$_id.nom",
-                },
-                "somme_retards_ponderee": {
-                    "$sum": {
-                        "$multiply": [
-                            "$moyenne_retard_line",
-                            "$total_trafics_line",
-                        ],
-                    },
-                },
-                "somme_trafics": {"$sum": "$total_trafics_line"},
-            },
-        },
-        {
-            "$addFields": {
-                "moyenne_retard_minutes": {
-                    "$cond": [
-                        {"$eq": ["$somme_trafics", 0]},
-                        None,
-                        {
-                            "$divide": [
-                                "$somme_retards_ponderee",
-                                "$somme_trafics",
-                            ],
-                        },
-                    ],
-                },
-            },
-        },
-        {"$sort": {"moyenne_retard_minutes": -1}},
-        {
-            "$project": {
-                "_id": 0,
-                "nom": "$_id.nom",
-                "moyenne_retard_minutes": 1,
-            },
-        },
+        # 1. On ne garde que les lignes qui ont du trafic (donc des retards potentiels)
+        { "$match": { "trafic.retard_minutes": { "$exists": True } } },
+
+        # 2. On calcule la somme et le nombre de retards pour la ligne ENTIÈRE.
+        # Cela correspond à la partie droite du JOIN SQL (Trafic).
+        { "$addFields": {
+            "line_total_delay": { "$sum": "$trafic.retard_minutes" },
+            "line_total_count": { "$size": "$trafic" }
+        }},
+
+        # 3. On déroule le cache des véhicules.
+        # C'est beaucoup plus rapide que de dérouler les horaires.
+        # C'est ici qu'on récupère TOUS les chauffeurs (y compris ceux qui ne roulent pas).
+        { "$unwind": "$vehicules_cache" },
+
+        # 4. On filtre ceux qui ont un chauffeur assigné
+        { "$match": { "vehicules_cache.nom_chauffeur": { "$ne": None } } },
+
+        # 5. Groupement par chauffeur.
+        # Si un chauffeur a 2 véhicules sur la même ligne, il sortira 2 fois du $unwind,
+        # donc on additionnera 2 fois les stats de la ligne.
+        # C'est exactement le comportement mathématique du JOIN SQL.
+        { "$group": {
+            "_id": "$vehicules_cache.nom_chauffeur",
+            "total_delay": { "$sum": "$line_total_delay" },
+            "total_trips": { "$sum": "$line_total_count" }
+        }},
+
+        # 6. Division finale pour obtenir la moyenne pondérée exacte.
+        { "$project": {
+            "_id": 0,
+            "nom": "$_id",
+            "moyenne_retard_minutes": { "$divide": ["$total_delay", "$total_trips"] }
+        }},
+
+        { "$sort": { "moyenne_retard_minutes": -1 } }
     ]
+
     df = aggregate_to_df(db.lignes, pipeline)
     return df[["nom", "moyenne_retard_minutes"]] if not df.empty else df
-
 
 def query_L_mongo(db) -> pd.DataFrame:
     """
