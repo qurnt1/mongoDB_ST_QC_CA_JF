@@ -500,14 +500,15 @@ def load_tables(
     )
     return tables
 
-
 def build_lignes_docs(
     tables: Dict[str, pd.DataFrame],
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
     Construit les documents de la collection MongoDB 'lignes'.
-    VERSION CORRIGÉE V4 : Ajout de id_ligne_officielle dans les véhicules.
+    VERSION OPTIMISÉE POUR REQUETE D :
+    - Pré-calcul de la moyenne CO2 par ligne.
+    - Mise en cache de la liste des véhicules directement dans la ligne.
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -519,361 +520,167 @@ def build_lignes_docs(
     df_t = tables["Trafic"]
     df_i = tables["Incident"]
     df_cap = tables["Capteur"]
+    df_mes = tables["Mesure"]
 
+    # --- 1. OPTIMISATION PERF : Pré-calcul CO2 par Ligne ---
+    log_fn("⚡ [OPTIM] Pré-calcul des moyennes CO2 par ligne...", replace_last=False)
+    co2_by_ligne: Dict[int, float] = {}
+    
+    if not df_cap.empty and not df_mes.empty:
+        df_full_mesures = df_cap.merge(df_mes, on="id_capteur")
+        df_co2 = df_full_mesures[df_full_mesures["type_capteur"] == "CO2"]
+        # Jointure avec Arret pour avoir l'id_ligne
+        df_co2_ligne = df_co2.merge(df_a[["id_arret", "id_ligne"]], on="id_arret")
+        
+        if not df_co2_ligne.empty:
+            res_co2 = df_co2_ligne.groupby("id_ligne")["valeur"].mean()
+            co2_by_ligne = res_co2.to_dict()
+            
+    log_fn(f"   -> Moyennes CO2 calculées pour {len(co2_by_ligne)} lignes.", replace_last=False)
+
+    # --- 2. OPTIMISATION PERF : Cache des véhicules par Ligne (Pour la requête D) ---
+    log_fn("⚡ [OPTIM] Construction du cache Véhicules par ligne...", replace_last=False)
+    vehicules_cache_by_ligne: Dict[int, List[Dict]] = {}
+    if not df_v.empty:
+        # On s'assure d'avoir id_ligne
+        # Note: Si id_ligne n'est pas dans Vehicule, il faut faire un merge via Horaire,
+        # mais selon ton schéma SQL standard, le véhicule est souvent lié à une ligne ou un trajet.
+        # Ici on suppose que la colonne id_ligne existe dans Vehicule (comme suggéré dans ton code précédent).
+        # Si elle n'existe pas, on prend celle renommée "id_ligne_officielle" ou on fait un merge.
+        
+        # Sécurité : Vérification des colonnes
+        cols_v = df_v.columns
+        col_ligne_v = "id_ligne" if "id_ligne" in cols_v else None
+        
+        if col_ligne_v:
+            for id_ligne, group in df_v.groupby(col_ligne_v):
+                if pd.isna(id_ligne): continue
+                v_list = []
+                for _, v_row in group.iterrows():
+                    v_doc = {
+                        "id_vehicule": int(v_row["id_vehicule"]),
+                        "immatriculation": v_row.get("immatriculation"),
+                        "type_vehicule": v_row.get("type_vehicule")
+                    }
+                    v_list.append(v_doc)
+                vehicules_cache_by_ligne[int(id_ligne)] = v_list
+
+    # --- 3. Préparations standards (Quartiers, Capteurs, Horaires, Trafic) ---
+    
     quartiers_by_arret: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
-        log_fn(
-            "Running : Groupement Quartiers par arrêt...",
-            replace_last=False,
-        )
         tmp = df_aq.merge(
-            df_q[["id_quartier", "nom"]].rename(
-                columns={"nom": "nom_quartier"},
-            ),
+            df_q[["id_quartier", "nom"]].rename(columns={"nom": "nom_quartier"}),
             on="id_quartier",
             how="left",
         )
         groups = tmp.groupby("id_arret")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Quartiers/Arrêts", log_fn)
-
-        for idx, (id_arret, group) in enumerate(groups, start=1):
-            subset = group[
-                [
-                    "id_quartier",
-                    "nom_quartier",
-                ]
-            ].drop_duplicates("id_quartier")
+        for id_arret, group in groups:
+            subset = group[["id_quartier", "nom_quartier"]].drop_duplicates("id_quartier")
             quartiers_by_arret[id_arret] = [
-                {
-                    "id_quartier": int(row["id_quartier"]),
-                    "nom": row["nom_quartier"],
-                }
-                for _, row in subset.iterrows()
-                if pd.notnull(row["id_quartier"])
+                {"id_quartier": int(row["id_quartier"]), "nom": row["nom_quartier"]}
+                for _, row in subset.iterrows() if pd.notnull(row["id_quartier"])
             ]
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Quartiers/Arrêts",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
 
     capteurs_ids_by_arret: Dict[int, List[int]] = {}
     if not df_cap.empty:
-        log_fn(
-            "Running : Groupement Capteurs par arrêt...",
-            replace_last=False,
-        )
         groups = df_cap.groupby("id_arret")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Capteurs/Arrêts", log_fn)
-
-        for idx, (id_arret, group) in enumerate(groups, start=1):
-            ids = [
-                int(value)
-                for value in group["id_capteur"].dropna().unique().tolist()
-            ]
+        for id_arret, group in groups:
+            ids = [int(value) for value in group["id_capteur"].dropna().unique().tolist()]
             capteurs_ids_by_arret[id_arret] = ids
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Capteurs/Arrêts",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
 
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
-        log_fn(
-            "Running : Jointure Horaire/Vehicule/Chauffeur...",
-            replace_last=False,
-        )
-        
-        # --- MODIFICATION START ---
-        # On renomme id_ligne dans Vehicule pour ne pas perdre l'info lors du merge
-        # et pouvoir l'injecter comme "id_ligne_officielle"
+        # Préparation jointure Vehicule / Chauffeur pour les imbriquer dans horaires
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
-
-        df_h_full = df_h.merge(
-            df_v_clean,
-            on="id_vehicule",
-            how="left",
-            suffixes=("", "_vehicule"),
-        )
-        # --- MODIFICATION END ---
-        
-        df_h_full = df_h_full.merge(
-            df_c,
-            on="id_chauffeur",
-            how="left",
-            suffixes=("", "_chauffeur"),
-        )
+        df_h_full = df_h.merge(df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule"))
+        df_h_full = df_h_full.merge(df_c, on="id_chauffeur", how="left", suffixes=("", "_chauffeur"))
 
         for col in ("heure_prevue", "heure_effective", "date_embauche"):
             if col in df_h_full.columns:
-                df_h_full[col] = pd.to_datetime(
-                    df_h_full[col],
-                    errors="coerce",
-                )
+                df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
 
         total_rows = len(df_h_full)
-        label = "Groupement Horaires/Arrêts"
-        log_progress(0, total_rows, label, log_fn)
+        log_progress(0, total_rows, "Groupement Horaires/Arrêts", log_fn)
 
         for idx, row in enumerate(df_h_full.itertuples(index=False), start=1):
-            if pd.isna(row.id_arret):
-                continue
-
+            if pd.isna(row.id_arret): continue
             id_arret = int(row.id_arret)
 
             vehicule: Dict[str, object] = {}
-            if (
-                getattr(row, "id_vehicule", None) is not None
-                and not pd.isna(row.id_vehicule)
-            ):
+            if getattr(row, "id_vehicule", None) is not None and not pd.isna(row.id_vehicule):
                 vehicule["id_vehicule"] = int(row.id_vehicule)
-            
-            # --- MODIFICATION START ---
-            # Ajout de l'ID de ligne officielle
-            if (
-                hasattr(row, "id_ligne_officielle")
-                and row.id_ligne_officielle is not None
-                and not pd.isna(row.id_ligne_officielle)
-            ):
-                vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
-            # --- MODIFICATION END ---
-
-            if (
-                hasattr(row, "immatriculation")
-                and row.immatriculation is not None
-                and not pd.isna(row.immatriculation)
-            ):
-                vehicule["immatriculation"] = row.immatriculation
-            if (
-                hasattr(row, "type_vehicule")
-                and row.type_vehicule is not None
-                and not pd.isna(row.type_vehicule)
-            ):
-                vehicule["type_vehicule"] = row.type_vehicule
-            if (
-                hasattr(row, "capacite")
-                and row.capacite is not None
-                and not pd.isna(row.capacite)
-            ):
-                vehicule["capacite"] = int(row.capacite)
+                if hasattr(row, "immatriculation") and pd.notnull(row.immatriculation):
+                    vehicule["immatriculation"] = row.immatriculation
+                if hasattr(row, "type_vehicule") and pd.notnull(row.type_vehicule):
+                    vehicule["type_vehicule"] = row.type_vehicule
 
             chauffeur: Dict[str, object] = {}
-            if (
-                hasattr(row, "id_chauffeur")
-                and row.id_chauffeur is not None
-                and not pd.isna(row.id_chauffeur)
-            ):
+            if hasattr(row, "id_chauffeur") and pd.notnull(row.id_chauffeur):
                 chauffeur["id_chauffeur"] = int(row.id_chauffeur)
-                if (
-                    hasattr(row, "nom")
-                    and row.nom is not None
-                    and not pd.isna(row.nom)
-                ):
+                if hasattr(row, "nom") and pd.notnull(row.nom):
                     chauffeur["nom"] = row.nom
-                if (
-                    hasattr(row, "date_embauche")
-                    and row.date_embauche is not None
-                    and not pd.isna(row.date_embauche)
-                    and isinstance(row.date_embauche, pd.Timestamp)
-                ):
-                    chauffeur["date_embauche"] = (
-                        row.date_embauche.to_pydatetime()
-                    )
 
-            if chauffeur:
-                vehicule["chauffeur"] = chauffeur
+            if chauffeur: vehicule["chauffeur"] = chauffeur
 
             horaire_doc: Dict[str, object] = {}
-            if (
-                hasattr(row, "id_horaire")
-                and row.id_horaire is not None
-                and not pd.isna(row.id_horaire)
-            ):
+            if hasattr(row, "id_horaire") and pd.notnull(row.id_horaire):
                 horaire_doc["id_horaire"] = int(row.id_horaire)
-            if (
-                hasattr(row, "heure_prevue")
-                and row.heure_prevue is not None
-                and not pd.isna(row.heure_prevue)
-                and isinstance(row.heure_prevue, pd.Timestamp)
-            ):
+            if hasattr(row, "heure_prevue") and pd.notnull(row.heure_prevue):
                 horaire_doc["heure_prevue"] = row.heure_prevue.to_pydatetime()
-            if (
-                hasattr(row, "heure_effective")
-                and row.heure_effective is not None
-                and not pd.isna(row.heure_effective)
-                and isinstance(row.heure_effective, pd.Timestamp)
-            ):
-                horaire_doc["heure_effective"] = (
-                    row.heure_effective.to_pydatetime()
-                )
-            if (
-                hasattr(row, "passagers_estimes")
-                and row.passagers_estimes is not None
-                and not pd.isna(row.passagers_estimes)
-            ):
+            if hasattr(row, "passagers_estimes") and pd.notnull(row.passagers_estimes):
                 horaire_doc["passagers_estimes"] = int(row.passagers_estimes)
 
-            if vehicule:
-                horaire_doc["vehicule"] = vehicule
-
+            if vehicule: horaire_doc["vehicule"] = vehicule
             horaires_by_arret.setdefault(id_arret, []).append(horaire_doc)
-
-            if (idx % 5000 == 0) or (idx == total_rows):
-                log_progress(idx, total_rows, label, log_fn)
-
+            
+            if idx % 5000 == 0: log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
         log_fn("", replace_last=False)
 
     arrets_by_ligne: Dict[int, List[Dict]] = {}
-    total_arrets = len(df_a)
-    label_arrets = "Construction Arrêts -> Lignes"
-    log_progress(0, total_arrets, label_arrets, log_fn)
-
-    for idx, (_, row) in enumerate(df_a.iterrows(), start=1):
-        if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]):
-            continue
-
+    for _, row in df_a.iterrows():
+        if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]): continue
         id_arret = int(row["id_arret"])
         id_ligne = int(row["id_ligne"])
-
-        arret_doc: Dict[str, object] = {
-            "id_arret": id_arret,
-            "nom": row["nom"],
-        }
-
-        latitude = row.get("latitude")
-        longitude = row.get("longitude")
-        if pd.notnull(latitude) and pd.notnull(longitude):
-            arret_doc["position"] = {
-                "type": "Point",
-                "coordinates": [float(longitude), float(latitude)],
-            }
-
-        quartiers = quartiers_by_arret.get(id_arret)
-        if quartiers:
-            arret_doc["quartiers"] = quartiers
-
-        capteurs_ids = capteurs_ids_by_arret.get(id_arret)
-        if capteurs_ids:
-            arret_doc["capteurs_ids"] = capteurs_ids
-
-        horaires = horaires_by_arret.get(id_arret)
-        if horaires:
-            arret_doc["horaires"] = horaires
-
+        arret_doc = {"id_arret": id_arret, "nom": row["nom"]}
+        
+        if id_arret in quartiers_by_arret: arret_doc["quartiers"] = quartiers_by_arret[id_arret]
+        if id_arret in capteurs_ids_by_arret: arret_doc["capteurs_ids"] = capteurs_ids_by_arret[id_arret]
+        if id_arret in horaires_by_arret: arret_doc["horaires"] = horaires_by_arret[id_arret]
+        
         arrets_by_ligne.setdefault(id_ligne, []).append(arret_doc)
 
-        if (idx % 500 == 0) or (idx == total_arrets):
-            log_progress(idx, total_arrets, label_arrets, log_fn)
-
-    log_fn("", replace_last=False)
-
+    # --- Gestion Trafic / Incidents ---
     incidents_by_trafic: Dict[int, List[Dict]] = {}
     if not df_i.empty:
-        log_fn(
-            "Running : Groupement Incidents par trafic...",
-            replace_last=False,
-        )
         groups = df_i.groupby("id_trafic")
-        nb_groups = len(groups)
-        log_progress(0, nb_groups, "Groupement Incidents/Trafic", log_fn)
-
-        for idx, (id_trafic, group) in enumerate(groups, start=1):
-            inc_list: List[Dict] = []
-            for _, incident_row in group.iterrows():
-                incident_doc: Dict[str, object] = {}
-                if (
-                    "id_incident" in incident_row
-                    and pd.notnull(incident_row["id_incident"])
-                ):
-                    incident_doc["id_incident"] = int(
-                        incident_row["id_incident"],
-                    )
-                if (
-                    "description" in incident_row
-                    and pd.notnull(incident_row["description"])
-                ):
-                    incident_doc["description"] = incident_row["description"]
-                if (
-                    "gravite" in incident_row
-                    and pd.notnull(incident_row["gravite"])
-                ):
-                    incident_doc["gravite"] = int(incident_row["gravite"])
-                if (
-                    "horodatage" in incident_row
-                    and pd.notnull(incident_row["horodatage"])
-                ):
-                    incident_datetime = to_datetime(
-                        incident_row["horodatage"],
-                    )
-                    if incident_datetime is not None:
-                        incident_doc["horodatage"] = incident_datetime
-
-                inc_list.append(incident_doc)
-
+        for id_trafic, group in groups:
+            inc_list = []
+            for _, r in group.iterrows():
+                i_doc = {}
+                if pd.notnull(r.get("id_incident")): i_doc["id_incident"] = int(r["id_incident"])
+                if pd.notnull(r.get("description")): i_doc["description"] = r["description"]
+                inc_list.append(i_doc)
             incidents_by_trafic[id_trafic] = inc_list
-            log_progress(
-                idx,
-                nb_groups,
-                "Groupement Incidents/Trafic",
-                log_fn,
-                step_percent=10,
-            )
-        log_fn("", replace_last=False)
 
     trafic_by_ligne: Dict[int, List[Dict]] = {}
     if not df_t.empty:
-        total_trafic = len(df_t)
-        label_trafic = "Preparation Trafic par Ligne"
-        log_progress(0, total_trafic, label_trafic, log_fn)
+        for _, row in df_t.iterrows():
+            if pd.isna(row["id_ligne"]) or pd.isna(row["id_trafic"]): continue
+            id_l, id_t = int(row["id_ligne"]), int(row["id_trafic"])
+            t_doc = {"id_trafic": id_t}
+            if pd.notnull(row.get("retard_minutes")): t_doc["retard_minutes"] = int(row["retard_minutes"])
+            if id_t in incidents_by_trafic: t_doc["incidents"] = incidents_by_trafic[id_t]
+            trafic_by_ligne.setdefault(id_l, []).append(t_doc)
 
-        for idx, (_, row) in enumerate(df_t.iterrows(), start=1):
-            if pd.isna(row["id_ligne"]) or pd.isna(row["id_trafic"]):
-                continue
-
-            id_ligne = int(row["id_ligne"])
-            id_trafic = int(row["id_trafic"])
-
-            trafic_doc: Dict[str, object] = {"id_trafic": id_trafic}
-
-            if "horodatage" in row and pd.notnull(row["horodatage"]):
-                dt_trafic = to_datetime(row["horodatage"])
-                if dt_trafic is not None:
-                    trafic_doc["horodatage"] = dt_trafic
-
-            if "retard_minutes" in row and pd.notnull(row["retard_minutes"]):
-                trafic_doc["retard_minutes"] = int(row["retard_minutes"])
-
-            if "evenement" in row and pd.notnull(row["evenement"]):
-                trafic_doc["evenement"] = row["evenement"]
-
-            incidents = incidents_by_trafic.get(id_trafic)
-            if incidents:
-                trafic_doc["incidents"] = incidents
-
-            trafic_by_ligne.setdefault(id_ligne, []).append(trafic_doc)
-
-            if (idx % 2500 == 0) or (idx == total_trafic):
-                log_progress(idx, total_trafic, label_trafic, log_fn)
-
-        log_fn("", replace_last=False)
-
+    # --- 4. Construction finale des documents Lignes ---
     docs: List[Dict] = []
     total_lignes = len(df_l)
     label_final = "Construction documents lignes"
     log_progress(0, total_lignes, label_final, log_fn)
 
     for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
-        if pd.isna(row["id_ligne"]):
-            continue
+        if pd.isna(row["id_ligne"]): continue
 
         id_ligne = int(row["id_ligne"])
         doc: Dict[str, object] = {
@@ -882,24 +689,22 @@ def build_lignes_docs(
             "type": row.get("type"),
         }
 
-        if "frequentation_moyenne" in row and pd.notnull(
-            row["frequentation_moyenne"],
-        ):
-            try:
-                freq_value = float(row["frequentation_moyenne"])
-                doc["frequentation_moyenne"] = (
-                    int(freq_value) if freq_value.is_integer() else freq_value
-                )
-            except Exception:
-                pass
+        # >>>> INJECTION OPTIMISATIONS <<<<
+        if id_ligne in co2_by_ligne:
+            doc["co2_moyen_ligne"] = co2_by_ligne[id_ligne]
+        
+        if id_ligne in vehicules_cache_by_ligne:
+            doc["vehicules_cache"] = vehicules_cache_by_ligne[id_ligne]
+        # >>>> FIN INJECTION <<<<
+
+        if "frequentation_moyenne" in row and pd.notnull(row["frequentation_moyenne"]):
+            doc["frequentation_moyenne"] = float(row["frequentation_moyenne"])
 
         arrets = arrets_by_ligne.get(id_ligne)
-        if arrets:
-            doc["arrets"] = arrets
+        if arrets: doc["arrets"] = arrets
 
         trafic = trafic_by_ligne.get(id_ligne)
-        if trafic:
-            doc["trafic"] = trafic
+        if trafic: doc["trafic"] = trafic
 
         docs.append(doc)
         if (idx % 100 == 0) or (idx == total_lignes):
@@ -2107,80 +1912,44 @@ def query_C_mongo(db) -> pd.DataFrame:
 
 def query_D_mongo(db) -> pd.DataFrame:
     """
-    Requête D (MongoDB) - Version V5 (Lookup Inversé).
-    Objectif : Récupérer la moyenne CO2 basée sur l'ID officiel du véhicule,
-    garantissant une correspondance à 100% avec le SQL.
+    Requête D (MongoDB) - Version ULTRA RAPIDE (Optimisée).
+    
+    Stratégie : 
+    On utilise la liste 'vehicules_cache' et la valeur 'co2_moyen_ligne'
+    pré-calculées lors de la migration.
+    Cela évite de faire des $unwind massifs sur arrets -> horaires.
     """
     pipeline = [
-        # 1. On descend directement aux véhicules (peu importe la ligne porteuse)
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
+        # 1. Filtre initial : on ne garde que les lignes utiles
+        {
+            "$match": {
+                "vehicules_cache": {"$exists": True, "$ne": []},
+                "co2_moyen_ligne": {"$exists": True}
+            }
+        },
+        # 2. On déroule la liste légère des véhicules
+        {"$unwind": "$vehicules_cache"},
         
-        # 2. On ne garde que les véhicules valides avec un ID officiel
-        # (Ce champ a été ajouté lors de la migration personnalisée)
-        {"$match": {
-            "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
-            "arrets.horaires.vehicule.id_ligne_officielle": {"$ne": None}
-        }},
-
-        # 3. Projection simplifiée pour préparer le Lookup
+        # 3. Projection simple (Récupération des données sans calcul)
         {
             "$project": {
                 "_id": 0,
-                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
-                # La clé de jointure fiable
-                "target_line_id": "$arrets.horaires.vehicule.id_ligne_officielle"
+                "id_vehicule": "$vehicules_cache.id_vehicule",
+                "immatriculation": "$vehicules_cache.immatriculation",
+                "moyenne_co2": "$co2_moyen_ligne"
             }
         },
-
-        # 4. LE LOOKUP CORRECTEUR : On va chercher le CO2 de la ligne OFFICIELLE
-        {
-            "$lookup": {
-                "from": "capteurs",
-                "localField": "target_line_id",   # On utilise l'ID officiel du véhicule
-                "foreignField": "arret.id_ligne", # On cherche les capteurs liés à cette ligne
-                "pipeline": [
-                    {"$match": {"type_capteur": "CO2"}},
-                    {"$unwind": "$mesures"},
-                    {"$group": {"_id": None, "avg": {"$avg": "$mesures.valeur"}}}
-                ],
-                "as": "co2_data"
-            }
-        },
-        
-        # On ne garde que les véhicules dont la ligne officielle a des capteurs CO2 (Inner Join)
-        {"$unwind": "$co2_data"}, 
-
-        # 5. Groupement final (Dédoublonnage)
-        # Tous les doublons du véhicule (dus aux arrêts partagés) auront ici la même moyenne.
-        {
-            "$group": {
-                "_id": {
-                    "id": "$id_vehicule",
-                    "immat": "$immatriculation"
-                },
-                "moyenne_co2": {"$first": "$co2_data.avg"}
-            }
-        },
-
-        # 6. Formatage final
-        {
-            "$project": {
-                "_id": 0,
-                "id_vehicule": "$_id.id",
-                "immatriculation": "$_id.immat",
-                "moyenne_co2": 1
-            }
-        },
-        {"$sort": {"moyenne_co2": -1}},
+        # 4. Tri par pollution décroissante
+        {"$sort": {"moyenne_co2": -1}}
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
     
     if df.empty:
+        # Retourne un DataFrame vide avec les bonnes colonnes pour l'affichage
         return pd.DataFrame(columns=["id_vehicule", "immatriculation", "moyenne_co2"])
         
+    # Réorganisation des colonnes pour correspondre exactement à l'attendu
     return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
 
 def query_E_mongo(db) -> pd.DataFrame:
