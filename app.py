@@ -507,23 +507,7 @@ def build_lignes_docs(
 ) -> List[Dict]:
     """
     Construit les documents de la collection MongoDB 'lignes'.
-
-    La construction repose sur les tables relationnelles :
-    - Ligne, Arret, ArretQuartier, Quartier
-    - Horaire, Vehicule, Chauffeur
-    - Trafic, Incident, Capteur
-
-    Paramètres
-    ----------
-    tables : dict[str, pandas.DataFrame]
-        Tables SQLite préchargées en mémoire.
-    log_fn : Callable[[str, bool], None]
-        Fonction de log pour suivre les différentes étapes.
-
-    Retour
-    ------
-    list[dict]
-        Liste des documents prêts à insérer dans la collection 'lignes'.
+    VERSION CORRIGÉE V4 : Ajout de id_ligne_officielle dans les véhicules.
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -553,7 +537,6 @@ def build_lignes_docs(
         nb_groups = len(groups)
         log_progress(0, nb_groups, "Groupement Quartiers/Arrêts", log_fn)
 
-        # Agrégation des quartiers par arrêt.
         for idx, (id_arret, group) in enumerate(groups, start=1):
             subset = group[
                 [
@@ -609,12 +592,20 @@ def build_lignes_docs(
             "Running : Jointure Horaire/Vehicule/Chauffeur...",
             replace_last=False,
         )
+        
+        # --- MODIFICATION START ---
+        # On renomme id_ligne dans Vehicule pour ne pas perdre l'info lors du merge
+        # et pouvoir l'injecter comme "id_ligne_officielle"
+        df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
+
         df_h_full = df_h.merge(
-            df_v,
+            df_v_clean,
             on="id_vehicule",
             how="left",
             suffixes=("", "_vehicule"),
         )
+        # --- MODIFICATION END ---
+        
         df_h_full = df_h_full.merge(
             df_c,
             on="id_chauffeur",
@@ -633,7 +624,6 @@ def build_lignes_docs(
         label = "Groupement Horaires/Arrêts"
         log_progress(0, total_rows, label, log_fn)
 
-        # Construction des sous-documents horaires (avec véhicule et chauffeur).
         for idx, row in enumerate(df_h_full.itertuples(index=False), start=1):
             if pd.isna(row.id_arret):
                 continue
@@ -646,6 +636,17 @@ def build_lignes_docs(
                 and not pd.isna(row.id_vehicule)
             ):
                 vehicule["id_vehicule"] = int(row.id_vehicule)
+            
+            # --- MODIFICATION START ---
+            # Ajout de l'ID de ligne officielle
+            if (
+                hasattr(row, "id_ligne_officielle")
+                and row.id_ligne_officielle is not None
+                and not pd.isna(row.id_ligne_officielle)
+            ):
+                vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
+            # --- MODIFICATION END ---
+
             if (
                 hasattr(row, "immatriculation")
                 and row.immatriculation is not None
@@ -736,7 +737,6 @@ def build_lignes_docs(
     label_arrets = "Construction Arrêts -> Lignes"
     log_progress(0, total_arrets, label_arrets, log_fn)
 
-    # Construction des documents "arret" imbriqués dans chaque ligne.
     for idx, (_, row) in enumerate(df_a.iterrows(), start=1):
         if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]):
             continue
@@ -786,7 +786,6 @@ def build_lignes_docs(
         nb_groups = len(groups)
         log_progress(0, nb_groups, "Groupement Incidents/Trafic", log_fn)
 
-        # Groupement de la liste d'incidents par identifiant de trafic.
         for idx, (id_trafic, group) in enumerate(groups, start=1):
             inc_list: List[Dict] = []
             for _, incident_row in group.iterrows():
@@ -872,7 +871,6 @@ def build_lignes_docs(
     label_final = "Construction documents lignes"
     log_progress(0, total_lignes, label_final, log_fn)
 
-    # Construction finale des documents "ligne" avec arrêts et trafic imbriqués.
     for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
         if pd.isna(row["id_ligne"]):
             continue
@@ -893,7 +891,6 @@ def build_lignes_docs(
                     int(freq_value) if freq_value.is_integer() else freq_value
                 )
             except Exception:
-                # Valeur non convertible : on ignore pour ne pas bloquer la migration.
                 pass
 
         arrets = arrets_by_ligne.get(id_ligne)
@@ -910,7 +907,6 @@ def build_lignes_docs(
 
     log_fn("", replace_last=False)
     return docs
-
 
 def build_quartiers_docs(
     tables: Dict[str, pd.DataFrame],
@@ -1972,6 +1968,54 @@ def query_A_mongo(db) -> pd.DataFrame:
     # Force l'ordre des colonnes
     return df[["nom_ligne", "moyenne_retard_minutes"]] if not df.empty else df
 
+def query_B_mongo(db):
+    """
+    Requête B en MongoDB :
+    Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.
+    Retourne un DataFrame avec :
+        - id_ligne
+        - moyenne_passagers_jour
+    """
+    pipeline = [
+        {"$unwind": "$arrets"},
+        {"$unwind": "$arrets.horaires"},
+        {
+            "$project": {
+                "_id": 0,
+                "id_ligne": "$id_ligne",
+                "jour": {
+                    "$substrBytes": ["$arrets.horaires.heure_prevue", 0, 10]
+                },
+                "passagers_estimes": "$arrets.horaires.passagers_estimes",
+            }
+        },
+        {
+            "$group": {
+                "_id": {"id_ligne": "$id_ligne", "jour": "$jour"},
+                "total_passagers_jour": {"$sum": "$passagers_estimes"},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id.id_ligne",
+                "moyenne_passagers_jour": {"$avg": "$total_passagers_jour"},
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "id_ligne": "$_id",
+                "moyenne_passagers_jour": 1,
+            }
+        },
+        {"$sort": {"moyenne_passagers_jour": -1}},
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    if df.empty:
+        return df
+    return df[["id_ligne", "moyenne_passagers_jour"]]
+
 def query_C_mongo(db) -> pd.DataFrame:
     """
     Requête C (MongoDB).
@@ -2061,82 +2105,83 @@ def query_C_mongo(db) -> pd.DataFrame:
     cols = ["nom_ligne", "nb_trafic_avec_incident", "nb_total_trafic", "taux_incident_pourcent"]
     return df[cols] if not df.empty else df
 
-
 def query_D_mongo(db) -> pd.DataFrame:
     """
-    Requête D (MongoDB).
-    SQL: id_vehicule, immatriculation, moyenne_co2
+    Requête D (MongoDB) - Version V5 (Lookup Inversé).
+    Objectif : Récupérer la moyenne CO2 basée sur l'ID officiel du véhicule,
+    garantissant une correspondance à 100% avec le SQL.
     """
     pipeline = [
-        {
-            "$lookup": {
-                "from": "capteurs",
-                "let": {"ligneId": "$id_ligne"},
-                "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$and": [
-                                    {"$eq": ["$arret.id_ligne", "$$ligneId"]},
-                                    {"$eq": ["$type_capteur", "CO2"]},
-                                ],
-                            },
-                        },
-                    },
-                    {"$unwind": "$mesures"},
-                    {
-                        "$group": {
-                            "_id": None,
-                            "moyenne_co2": {"$avg": "$mesures.valeur"},
-                        },
-                    },
-                ],
-                "as": "co2_info",
-            },
-        },
-        {
-            "$unwind": {
-                "path": "$co2_info",
-                "preserveNullAndEmptyArrays": True,
-            },
-        },
+        # 1. On descend directement aux véhicules (peu importe la ligne porteuse)
         {"$unwind": "$arrets"},
         {"$unwind": "$arrets.horaires"},
-        {
-            "$project": {
-                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
-                "moyenne_co2": "$co2_info.moyenne_co2",
-            },
-        },
-        {
-            "$match": {
-                "id_vehicule": {"$ne": None},
-                "moyenne_co2": {"$ne": None},
-            },
-        },
-        {
-            "$group": {
-                "_id": {
-                    "id_vehicule": "$id_vehicule",
-                    "immatriculation": "$immatriculation",
-                },
-                "moyenne_co2": {"$avg": "$moyenne_co2"},
-            },
-        },
-        {"$sort": {"moyenne_co2": -1}},
+        
+        # 2. On ne garde que les véhicules valides avec un ID officiel
+        # (Ce champ a été ajouté lors de la migration personnalisée)
+        {"$match": {
+            "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
+            "arrets.horaires.vehicule.id_ligne_officielle": {"$ne": None}
+        }},
+
+        # 3. Projection simplifiée pour préparer le Lookup
         {
             "$project": {
                 "_id": 0,
-                "id_vehicule": "$_id.id_vehicule",
-                "immatriculation": "$_id.immatriculation",
-                "moyenne_co2": 1,
-            },
+                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
+                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
+                # La clé de jointure fiable
+                "target_line_id": "$arrets.horaires.vehicule.id_ligne_officielle"
+            }
         },
-    ]
-    df = aggregate_to_df(db.lignes, pipeline)
-    return df[["id_vehicule", "immatriculation", "moyenne_co2"]] if not df.empty else df
 
+        # 4. LE LOOKUP CORRECTEUR : On va chercher le CO2 de la ligne OFFICIELLE
+        {
+            "$lookup": {
+                "from": "capteurs",
+                "localField": "target_line_id",   # On utilise l'ID officiel du véhicule
+                "foreignField": "arret.id_ligne", # On cherche les capteurs liés à cette ligne
+                "pipeline": [
+                    {"$match": {"type_capteur": "CO2"}},
+                    {"$unwind": "$mesures"},
+                    {"$group": {"_id": None, "avg": {"$avg": "$mesures.valeur"}}}
+                ],
+                "as": "co2_data"
+            }
+        },
+        
+        # On ne garde que les véhicules dont la ligne officielle a des capteurs CO2 (Inner Join)
+        {"$unwind": "$co2_data"}, 
+
+        # 5. Groupement final (Dédoublonnage)
+        # Tous les doublons du véhicule (dus aux arrêts partagés) auront ici la même moyenne.
+        {
+            "$group": {
+                "_id": {
+                    "id": "$id_vehicule",
+                    "immat": "$immatriculation"
+                },
+                "moyenne_co2": {"$first": "$co2_data.avg"}
+            }
+        },
+
+        # 6. Formatage final
+        {
+            "$project": {
+                "_id": 0,
+                "id_vehicule": "$_id.id",
+                "immatriculation": "$_id.immat",
+                "moyenne_co2": 1
+            }
+        },
+        {"$sort": {"moyenne_co2": -1}},
+    ]
+
+    df = aggregate_to_df(db.lignes, pipeline)
+    
+    if df.empty:
+        return pd.DataFrame(columns=["id_vehicule", "immatriculation", "moyenne_co2"])
+        
+    return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
 
 def query_E_mongo(db) -> pd.DataFrame:
     """
@@ -2722,362 +2767,6 @@ def query_N_mongo(db) -> pd.DataFrame:
     df = aggregate_to_df(db.lignes, pipeline)
     cols = ["nom_ligne", "type", "frequentation_moyenne", "categorie_frequentation"]
     return df[cols] if not df.empty else df
-
-##########
-
-
-def query_B_mongo(db):
-    """
-    Requête B en MongoDB :
-    Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.
-    Retourne un DataFrame avec :
-        - id_ligne
-        - moyenne_passagers_jour
-    """
-    pipeline = [
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-        {
-            "$project": {
-                "_id": 0,
-                "id_ligne": "$id_ligne",
-                "jour": {
-                    "$substrBytes": ["$arrets.horaires.heure_prevue", 0, 10]
-                },
-                "passagers_estimes": "$arrets.horaires.passagers_estimes",
-            }
-        },
-        {
-            "$group": {
-                "_id": {"id_ligne": "$id_ligne", "jour": "$jour"},
-                "total_passagers_jour": {"$sum": "$passagers_estimes"},
-            }
-        },
-        {
-            "$group": {
-                "_id": "$_id.id_ligne",
-                "moyenne_passagers_jour": {"$avg": "$total_passagers_jour"},
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,
-                "id_ligne": "$_id",
-                "moyenne_passagers_jour": 1,
-            }
-        },
-        {"$sort": {"moyenne_passagers_jour": -1}},
-    ]
-
-    df = aggregate_to_df(db.lignes, pipeline)
-    if df.empty:
-        return df
-    return df[["id_ligne", "moyenne_passagers_jour"]]
-
-def query_D_mongo(db, debug: bool = False) -> pd.DataFrame:
-    """
-    Requête D : CO2 par véhicule.
-    SQL: id_vehicule, immatriculation, moyenne_co2
-    """
-    pipeline = [
-        # 1. moyenne CO2 par ligne
-        {
-            "$lookup": {
-                "from": "capteurs",
-                "let": {"ligneId": "$id_ligne"},
-                "pipeline": [
-                    {
-                        "$match": {
-                            "$expr": {
-                                "$and": [
-                                    {"$eq": ["$arret.id_ligne", "$$ligneId"]},
-                                    {"$eq": ["$type_capteur", "CO2"]},
-                                ],
-                            },
-                        },
-                    },
-                    {"$unwind": "$mesures"},
-                    {
-                        "$group": {
-                            "_id": None,
-                            "moyenne_co2": {"$avg": "$mesures.valeur"},
-                        },
-                    },
-                ],
-                "as": "co2_info",
-            },
-        },
-        {
-            "$unwind": {
-                "path": "$co2_info",
-                "preserveNullAndEmptyArrays": False,
-            }
-        },
-
-        # 2. Descente vers horaires / véhicules
-        {
-            "$unwind": {
-                "path": "$arrets",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$unwind": {
-                "path": "$arrets.horaires",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$match": {
-                "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
-            },
-        },
-
-        # 3. Déduplication véhicule
-        {
-            "$group": {
-                "_id": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": {
-                    "$first": "$arrets.horaires.vehicule.immatriculation",
-                },
-                "moyenne_co2": {"$first": "$co2_info.moyenne_co2"},
-            },
-        },
-        {"$sort": {"moyenne_co2": -1}},
-
-        # 4. Projection finale
-        {
-            "$project": {
-                "_id": 0,
-                "id_vehicule": "$_id",
-                "immatriculation": 1,
-                "moyenne_co2": 1,
-            },
-        },
-    ]
-
-    df = aggregate_to_df(db.lignes, pipeline)
-    if df.empty:
-        return df
-    return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
-
-def query_K_mongo(db, debug: bool = False) -> pd.DataFrame:
-    """
-    Requête K : Moyenne des retards par chauffeur.
-    SQL: nom, moyenne_retard_minutes
-    """
-    pipeline = [
-        # 1. Stats de retard au niveau ligne
-        {
-            "$addFields": {
-                "nb_trafics": {
-                    "$size": {"$ifNull": ["$trafic", []]},
-                },
-                "moyenne_retard_line": {
-                    "$cond": [
-                        {
-                            "$gt": [
-                                {"$size": {"$ifNull": ["$trafic", []]}},
-                                0,
-                            ],
-                        },
-                        {"$avg": "$trafic.retard_minutes"},
-                        None,
-                    ],
-                },
-            },
-        },
-        {
-            "$match": {
-                "nb_trafics": {"$gt": 0},
-                "moyenne_retard_line": {"$ne": None},
-            },
-        },
-
-        # 2. Descente vers horaires / chauffeurs
-        {
-            "$unwind": {
-                "path": "$arrets",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$unwind": {
-                "path": "$arrets.horaires",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$match": {
-                "arrets.horaires.vehicule.chauffeur.nom": {"$ne": None},
-            },
-        },
-
-        # 3. Déduplication (chauffeur, ligne)
-        {
-            "$group": {
-                "_id": {
-                    "nom": "$arrets.horaires.vehicule.chauffeur.nom",
-                    "id_ligne": "$id_ligne",
-                },
-                "nb_trafics_line": {"$first": "$nb_trafics"},
-                "moyenne_retard_line": {"$first": "$moyenne_retard_line"},
-            },
-        },
-
-        # 4. Moyenne pondérée par chauffeur
-        {
-            "$group": {
-                "_id": "$_id.nom",
-                "somme_retards_ponderee": {
-                    "$sum": {
-                        "$multiply": [
-                            "$moyenne_retard_line",
-                            "$nb_trafics_line",
-                        ],
-                    },
-                },
-                "somme_trafics": {"$sum": "$nb_trafics_line"},
-            },
-        },
-        {
-            "$addFields": {
-                "moyenne_retard_minutes": {
-                    "$cond": [
-                        {"$eq": ["$somme_trafics", 0]},
-                        None,
-                        {
-                            "$divide": [
-                                "$somme_retards_ponderee",
-                                "$somme_trafics",
-                            ],
-                        },
-                    ],
-                },
-            },
-        },
-        {"$sort": {"moyenne_retard_minutes": -1}},
-
-        # 5. Projection finale
-        {
-            "$project": {
-                "_id": 0,
-                "nom": "$_id",
-                "moyenne_retard_minutes": 1,
-            },
-        },
-    ]
-
-    df = aggregate_to_df(db.lignes, pipeline)
-    if df.empty:
-        return df
-    return df[["nom", "moyenne_retard_minutes"]]
-
-def query_L_mongo(db, debug: bool = False) -> pd.DataFrame:
-    """
-    Requête L : % de Bus électriques par ligne.
-    SQL: nom_ligne, total_vehicules, nb_electriques, pourcentage_electrique
-    """
-    pipeline = [
-        # 1. Lignes de type Bus
-        {"$match": {"type": "Bus"}},
-
-        # 2. Descente vers horaires / véhicules
-        {
-            "$unwind": {
-                "path": "$arrets",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$unwind": {
-                "path": "$arrets.horaires",
-                "preserveNullAndEmptyArrays": True,
-            }
-        },
-        {
-            "$match": {
-                "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
-            },
-        },
-
-        # 3. Déduplication véhicule par ligne
-        {
-            "$group": {
-                "_id": {
-                    "nom_ligne": "$nom_ligne",
-                    "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                },
-                "type_vehicule": {
-                    "$first": "$arrets.horaires.vehicule.type_vehicule",
-                },
-            },
-        },
-
-        # 4. Stats finales par ligne
-        {
-            "$group": {
-                "_id": "$_id.nom_ligne",
-                "total_vehicules": {"$sum": 1},
-                "nb_electriques": {
-                    "$sum": {
-                        "$cond": [
-                            {"$eq": ["$type_vehicule", "Electrique"]},
-                            1,
-                            0,
-                        ],
-                    },
-                },
-            },
-        },
-        {
-            "$addFields": {
-                "pourcentage_electrique": {
-                    "$cond": [
-                        {"$eq": ["$total_vehicules", 0]},
-                        0,
-                        {
-                            "$multiply": [
-                                {
-                                    "$divide": [
-                                        "$nb_electriques",
-                                        "$total_vehicules",
-                                    ],
-                                },
-                                100,
-                            ],
-                        },
-                    ],
-                },
-            },
-        },
-        {"$sort": {"pourcentage_electrique": -1}},
-
-        # 5. Projection finale
-        {
-            "$project": {
-                "_id": 0,
-                "nom_ligne": "$_id",
-                "total_vehicules": 1,
-                "nb_electriques": 1,
-                "pourcentage_electrique": 1,
-            },
-        },
-    ]
-
-    df = aggregate_to_df(db.lignes, pipeline)
-    if df.empty:
-        return df
-
-    cols = [
-        "nom_ligne",
-        "total_vehicules",
-        "nb_electriques",
-        "pourcentage_electrique",
-    ]
-    return df[cols]
-
-###########
 
 QUERY_MONGO_FUNCS: Dict[str, Callable] = {
     "A": query_A_mongo,
