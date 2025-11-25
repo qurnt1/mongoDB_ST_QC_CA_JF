@@ -67,10 +67,6 @@ RÈGLES STRICTES DE GÉNÉRATION :
     }
 """
 
-MIGRATION_LOG_PLACEHOLDER: Optional[st.delta_generator.DeltaGenerator] = None
-MAX_LOG_LINES = 300
-
-
 # =====================================================================
 # UTILITAIRES GENERAUX
 # =====================================================================
@@ -1655,62 +1651,58 @@ def render_partie_1_sqlite(tab) -> None:
 # =====================================================================
 # Partie 2 : MIGRATION SQLITE -> MONGODB
 # =====================================================================
+# =====================================================================
+# VARIABLES GLOBALES ET FONCTION DE LOG (MANQUANTES)
+# =====================================================================
+
+MIGRATION_LOG_PLACEHOLDER: Optional[st.delta_generator.DeltaGenerator] = None
+MAX_LOG_LINES = 300
 
 def streamlit_migration_log(
     message: str,
     replace_last: bool = False,
 ) -> None:
     """
-    Fonction de log spécifique à la migration, synchronisant le journal
-    en temps réel avec l'interface Streamlit.
-
-    Paramètres
-    ----------
-    message : str
-        Message à afficher dans le journal de migration.
-    replace_last : bool
-        Si True, remplace la dernière entrée (progression), sinon ajoute
-        une nouvelle ligne.
+    Fonction de log spécifique à la migration.
+    Utilise .code() au lieu de .text_area() pour éviter les crashs "Duplicate Key".
     """
     global MIGRATION_LOG_PLACEHOLDER
 
     logs: List[str] = st.session_state.get("migration_logs", [])
+    
+    # Mise à jour de la liste des logs
     if replace_last and logs:
         logs[-1] = message
     else:
         logs.append(message)
+    
     st.session_state["migration_logs"] = logs
 
+    # Mise à jour visuelle
     if MIGRATION_LOG_PLACEHOLDER is not None:
         display_lines = logs[-MAX_LOG_LINES:]
         text_content = "\n".join(display_lines)
-        MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
         
+        # On utilise .code() ici : c'est fait pour du texte brut, ça scrolle,
+        # et surtout ça ne plante JAMAIS lors des mises à jour rapides.
+        MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
 
 def render_partie_2_migration(tab) -> None:
     """
-    Affiche la Partie 2 : pilotage de la migration SQLite -> MongoDB.
-
-    Paramètres
-    ----------
-    tab :
-        Conteneur Streamlit (onglet) dans lequel les éléments sont rendus.
+    Affiche la Partie 2 : pilotage de la migration.
+    Cache les logs si vides, affiche en temps réel pendant l'exécution,
+    et affiche un récapitulatif stable à la fin.
     """
     global MIGRATION_LOG_PLACEHOLDER
 
     with tab:
         st.subheader("Partie 2 : Migration vers MongoDB")
-        st.caption(
-            "Cliquez pour migrer les données de SQLite vers MongoDB.",
-        )
+        st.caption("Cliquez pour migrer les données de SQLite vers MongoDB.")
 
         def start_migration_callback() -> None:
-            """
-            Callback appelé au clic sur le bouton de migration pour
-            marquer le démarrage du traitement.
-            """
             st.session_state["migration_running"] = True
             st.session_state["migration_logs"] = []
+            st.session_state["migration_done_msg"] = ""
 
         col_btn, col_status = st.columns([1, 3], gap="small")
 
@@ -1720,51 +1712,47 @@ def render_partie_2_migration(tab) -> None:
                 key="btn_migration",
                 width="content",
                 on_click=start_migration_callback,
-                disabled=st.session_state["migration_running"],
+                disabled=st.session_state.get("migration_running", False),
             )
 
+        # C'est ici que les logs s'afficheront
         MIGRATION_LOG_PLACEHOLDER = st.empty()
 
-        if st.session_state["migration_running"]:
-            MIGRATION_LOG_PLACEHOLDER.code(
-                "Initialisation du processus...",
-                language="text",
-            )
-
+        # CAS 1 : Migration en cours (Animation temps réel)
+        if st.session_state.get("migration_running", False):
+            MIGRATION_LOG_PLACEHOLDER.code("Initialisation...", language="text")
+            
             with col_status:
-                with st.spinner(
-                    "Migration en cours... Le bouton est désactivé.",
-                ):
+                with st.spinner("Traitement en cours..."):
+                    # On lance la migration qui va appeler streamlit_migration_log
                     migrer_sqlite_vers_mongo(log_fn_raw=streamlit_migration_log)
 
-            st.session_state["migration_done_msg"] = (
-                "Migration terminée avec succès !"
-            )
+            st.session_state["migration_done_msg"] = "Migration terminée avec succès !"
             st.session_state["migration_running"] = False
-
-            st.toast("Migration terminée !", icon="🎉")
+            
+            st.toast("Terminé !", icon="🎉")
             time.sleep(1)
             st.rerun()
 
+        # Message de succès (reste affiché après le rerun)
         if st.session_state.get("migration_done_msg"):
             with col_status:
                 st.success(st.session_state["migration_done_msg"])
 
+        # CAS 2 : Migration finie ou logs existants (Affichage statique)
+        # On n'affiche cette zone QUE s'il y a des logs (donc caché au démarrage)
         logs: List[str] = st.session_state.get("migration_logs", [])
-        if logs:
+        if logs and not st.session_state.get("migration_running", False):
             log_text = "\n".join(logs[-MAX_LOG_LINES:])
-        else:
-            log_text = "Prêt à lancer la migration."
-
-        MIGRATION_LOG_PLACEHOLDER.text_area(
-            label="Journal de migration",
-            value=log_text,
-            height=400,
-        )
-
-# =====================================================================
-# REQUETES MONGODB (PARTIE 3)
-# =====================================================================
+            
+            # Ici on peut utiliser text_area car c'est un affichage STATIQUE (une seule fois)
+            # Ça permet de scroller et copier le texte facilement.
+            MIGRATION_LOG_PLACEHOLDER.text_area(
+                "Journal de migration (Terminé)",
+                value=log_text,
+                height=400,
+                key="final_log_view"
+            )
 # =====================================================================
 # REQUETES MONGODB (PARTIE 3)
 # =====================================================================
@@ -2835,7 +2823,6 @@ def render_partie_5_comparaison(tab) -> None:
         # Score final de validation
         score = int((total_ok / total_queries) * 100)
         if score == 100:
-            st.balloons()
             st.success(f"🏆 Migration validée à 100% ! ({total_ok}/{total_queries} requêtes identiques)")
         elif score > 80:
             st.success(f"✅ Migration validée à {score}% ({total_ok}/{total_queries} requêtes identiques)")
