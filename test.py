@@ -1,219 +1,179 @@
-import os
 import sqlite3
 import pandas as pd
 import pymongo
+import os
+import time
 
-# ====== CONFIG ======
-DOSSIER_DATA = "data"
-DOSSIER_SQLITE = "sqlite"
-DB_FILE = os.path.join(DOSSIER_DATA, DOSSIER_SQLITE, "db", "paris2055.sqlite")
-
+# --- CONFIGURATION ---
+DB_SQLITE = "data/sqlite/db/paris2055.sqlite"  # Vérifie ton chemin
 MONGO_URI = "mongodb://127.0.0.1:27017/"
-MONGO_DB_NAME = "Paris2055"
+MONGO_DB_NAME = "Paris2055_2"  # Une base de test séparée
 
-
-# ====== OUTIL COMMUN ======
-def aggregate_to_df(collection, pipeline) -> pd.DataFrame:
-    try:
-        docs = list(collection.aggregate(pipeline))
-    except Exception as e:
-        print(f"Erreur Mongo: {e}")
-        return pd.DataFrame()
-    
-    if not docs:
-        return pd.DataFrame()
-    return pd.DataFrame(docs)
-
-
-# ====== VERIFICATION DE LA MIGRATION ======
-def check_migration_quality(db):
-    print("\n🕵️‍♂️ --- VÉRIFICATION DE LA QUALITÉ DE MIGRATION ---")
-    
-    # On cherche un véhicule au hasard pour voir s'il a le champ magique
-    pipeline = [
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-        {"$match": {"arrets.horaires.vehicule.id_vehicule": {"$ne": None}}},
-        {"$limit": 1},
-        {"$project": {"vehicule": "$arrets.horaires.vehicule"}}
-    ]
-    
-    res = list(db.lignes.aggregate(pipeline))
-    
-    if not res:
-        print("❌ Aucun véhicule trouvé dans la collection 'lignes'.")
-        return False
-
-    vehicule = res[0]['vehicule']
-    # print(f"Exemple de véhicule trouvé : {vehicule}")
-    
-    if "id_ligne_officielle" in vehicule:
-        print(f"✅ LE CHAMP 'id_ligne_officielle' EST PRÉSENT ! (Valeur: {vehicule['id_ligne_officielle']})")
-        return True
-    else:
-        print("❌ LE CHAMP 'id_ligne_officielle' EST MANQUANT !")
-        return False
-
-
-# ====== REQUETE D MONGO (VERSION V5 - LOOKUP INVERSÉ) ======
-def query_D_mongo(db, debug: bool = False) -> pd.DataFrame:
-    """
-    Requête D (MongoDB) - Version V5 (Lookup Inversé).
-    Objectif : Récupérer la moyenne CO2 basée sur l'ID officiel du véhicule.
-    """
-    if debug:
-        print("[D][Mongo] Démarrage du pipeline V5 (Lookup Inversé)...")
-
-    pipeline = [
-        # 1. On descend directement aux véhicules (peu importe la ligne porteuse)
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-        
-        # 2. On ne garde que les véhicules valides avec un ID officiel
-        {"$match": {
-            "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
-            "arrets.horaires.vehicule.id_ligne_officielle": {"$ne": None}
-        }},
-
-        # 3. Projection simplifiée pour préparer le Lookup
-        {
-            "$project": {
-                "_id": 0,
-                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
-                # C'est ici l'astuce : on prépare la clé de jointure
-                "target_line_id": "$arrets.horaires.vehicule.id_ligne_officielle"
-            }
-        },
-
-        # 4. LE LOOKUP CORRECTEUR : On va chercher le CO2 de la ligne OFFICIELLE
-        # et non pas le CO2 de la ligne racine du document.
-        {
-            "$lookup": {
-                "from": "capteurs",
-                "localField": "target_line_id",   # On utilise l'ID officiel du véhicule
-                "foreignField": "arret.id_ligne", # On cherche les capteurs liés à cette ligne
-                "pipeline": [
-                    {"$match": {"type_capteur": "CO2"}},
-                    {"$unwind": "$mesures"},
-                    {"$group": {"_id": None, "avg": {"$avg": "$mesures.valeur"}}}
-                ],
-                "as": "co2_data"
-            }
-        },
-        
-        # On ne garde que les véhicules dont la ligne officielle a des capteurs CO2 (Inner Join)
-        {"$unwind": "$co2_data"}, 
-
-        # 5. Groupement final (Dédoublonnage)
-        # Comme le véhicule existe en 59 exemplaires dans la base, ils auront maintenant 
-        # tous la même moyenne (celle de la ligne officielle). On en garde un seul.
-        {
-            "$group": {
-                "_id": {
-                    "id": "$id_vehicule",
-                    "immat": "$immatriculation"
-                },
-                "moyenne_co2": {"$first": "$co2_data.avg"}
-            }
-        },
-
-        # 6. Formatage final
-        {
-            "$project": {
-                "_id": 0,
-                "id_vehicule": "$_id.id",
-                "immatriculation": "$_id.immat",
-                "moyenne_co2": 1
-            }
-        },
-        {"$sort": {"moyenne_co2": -1}},
-    ]
-
-    df = aggregate_to_df(db.lignes, pipeline)
-    
-    if debug:
-        print(f"[D][Mongo] Pipeline terminé. {len(df)} lignes trouvées.")
-
-    if df.empty:
-        return pd.DataFrame(columns=["id_vehicule", "immatriculation", "moyenne_co2"])
-        
-    return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
-
-
-# ====== DEBUG DIRECT D : SQL vs MONGO ======
-def debug_compare_D_direct() -> None:
-    print("\n================= DEBUG REQUETE D (SQL vs Mongo) =================\n")
-    
-    # ---------- PRE-CHECK MONGO ----------
+def reset_mongo_db():
+    """Supprime la base de test pour repartir de zéro."""
     client = pymongo.MongoClient(MONGO_URI)
-    db = client[MONGO_DB_NAME]
-    
-    migration_ok = check_migration_quality(db)
-    if not migration_ok:
-        print("\n⛔ ARRET DU TEST : La base MongoDB n'est pas à jour.")
-        client.close()
-        return
-
-    # ---------- 1) SQL D ----------
-    print("\n[ETAPE 1] Calcul D côté SQL...")
-    sql_D = (
-        "SELECT V.id_vehicule, V.immatriculation, "
-        "      AVG(M.valeur) AS moyenne_co2 "
-        "FROM Vehicule AS V "
-        "JOIN Ligne AS L ON V.id_ligne = L.id_ligne "
-        "JOIN Arret AS A ON L.id_ligne = A.id_ligne "
-        "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-        "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-        "WHERE C.type_capteur = 'CO2' "
-        "GROUP BY V.id_vehicule, V.immatriculation "
-        "ORDER BY moyenne_co2 DESC;"
-    )
-
-    with sqlite3.connect(DB_FILE) as conn:
-        df_sql = pd.read_sql_query(sql_D, conn)
-    print(f"[D][SQL] Terminé. {len(df_sql)} lignes.")
-
-    # ---------- 2) Mongo D ----------
-    print("[ETAPE 2] Calcul D côté MongoDB...")
-    df_mongo = query_D_mongo(db, debug=True)
+    client.drop_database(MONGO_DB_NAME)
+    print(f"🗑️  Base MongoDB '{MONGO_DB_NAME}' supprimée pour test propre.")
     client.close()
 
-    # ---------- 3) Comparaison ----------
-    print("\n[ETAPE 3] Comparaison des résultats...")
-
-    if df_sql.empty or df_mongo.empty:
-        print("ATTENTION: L'un des DataFrames est vide.")
+def migration_speciale_k():
+    """
+    Migration simplifiée mais CORRIGÉE : 
+    Elle injecte 'nom_chauffeur' directement dans 'vehicules_cache' des lignes.
+    """
+    print("🚀 Démarrage de la migration optimisée (Lignes + Trafic + Véhicules)...")
+    
+    if not os.path.exists(DB_SQLITE):
+        print(f"❌ ERREUR : Base SQLite introuvable ici : {DB_SQLITE}")
         return
 
-    df_merged = df_sql.merge(
-        df_mongo,
-        on=["id_vehicule", "immatriculation"],
-        how="outer",
-        suffixes=("_sql", "_mongo"),
-    )
-
-    df_merged["diff"] = (df_merged["moyenne_co2_sql"] - df_merged["moyenne_co2_mongo"]).abs()
+    conn = sqlite3.connect(DB_SQLITE)
     
-    # Tolérance flottante
-    TOLERANCE = 0.0000001
-    nb_erreurs = df_merged[df_merged["diff"] > TOLERANCE].shape[0]
+    # 1. Chargement des données brutes
+    df_ligne = pd.read_sql("SELECT * FROM Ligne", conn)
+    df_trafic = pd.read_sql("SELECT * FROM Trafic", conn)
+    df_vehicule = pd.read_sql("SELECT * FROM Vehicule", conn)
+    df_chauffeur = pd.read_sql("SELECT * FROM Chauffeur", conn)
+    conn.close()
 
-    print(f"Nombre total de lignes fusionnées : {len(df_merged)}")
-    print(f"Nombre de différences significatives : {nb_erreurs}")
+    # 2. Préparation du Cache Véhicule AVEC Chauffeur (La Clé du succès)
+    # On joint Véhicules et Chauffeurs AVANT de construire les objets
+    print("⚙️  Construction du cache véhicules avec chauffeurs...")
+    df_v_merged = df_vehicule.merge(df_chauffeur, on="id_chauffeur", how="left")
     
-    if nb_erreurs == 0:
-        if len(df_sql) == len(df_mongo):
-             print("\n✅ SUCCÈS TOTAL : Les résultats sont mathématiquement identiques (Taille + Valeurs) !")
-        else:
-             print(f"\n⚠️ VALEURS OK MAIS TAILLE DIFFÉRENTE (SQL={len(df_sql)} vs Mongo={len(df_mongo)})")
-    else:
-        print(f"\n❌ ECHEC : Il y a {nb_erreurs} différences.")
-        print("Top 5 des différences :")
-        print(df_merged.sort_values("diff", ascending=False).head(5))
+    # Dictionnaire : id_ligne -> Liste de véhicules (avec nom chauffeur)
+    vehicules_map = {}
+    for id_ligne, group in df_v_merged.groupby("id_ligne"):
+        v_list = []
+        for _, row in group.iterrows():
+            v_doc = {
+                "id_vehicule": int(row["id_vehicule"]),
+                "immatriculation": row["immatriculation"],
+                # C'EST ICI QUE TOUT SE JOUE : On stocke le nom direct
+                "nom_chauffeur": row["nom"] if pd.notnull(row["nom"]) else None
+            }
+            v_list.append(v_doc)
+        vehicules_map[int(id_ligne)] = v_list
 
-    print("\n================= FIN DEBUG =================\n")
+    # 3. Préparation du Trafic
+    print("⚙️  Association du trafic aux lignes...")
+    trafic_map = {}
+    for id_ligne, group in df_trafic.groupby("id_ligne"):
+        t_list = []
+        for _, row in group.iterrows():
+            # On ne garde que ce qui sert au calcul (retard)
+            t_doc = {
+                "id_trafic": int(row["id_trafic"]),
+                "retard_minutes": int(row["retard_minutes"]) if pd.notnull(row["retard_minutes"]) else 0
+            }
+            t_list.append(t_doc)
+        trafic_map[int(id_ligne)] = t_list
 
+    # 4. Assemblage et Insertion MongoDB
+    documents = []
+    for _, row in df_ligne.iterrows():
+        id_l = int(row["id_ligne"])
+        doc = {
+            "id_ligne": id_l,
+            "nom_ligne": row["nom_ligne"],
+            "type": row["type"],
+            # Injection des caches
+            "vehicules_cache": vehicules_map.get(id_l, []),
+            "trafic": trafic_map.get(id_l, [])
+        }
+        documents.append(doc)
+
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client[MONGO_DB_NAME]
+    if documents:
+        db.lignes.insert_many(documents)
+        print(f"✅ {len(documents)} lignes migrées dans '{MONGO_DB_NAME}.lignes'.")
+    client.close()
+
+def get_sql_result():
+    print("\n🔵 [SQL] Exécution Requête K...")
+    query = """
+    SELECT C.nom, 
+           AVG(T.retard_minutes) AS moyenne_retard_minutes
+    FROM Chauffeur AS C
+    JOIN Vehicule AS V ON C.id_chauffeur = V.id_chauffeur
+    JOIN Trafic AS T ON V.id_ligne = T.id_ligne
+    GROUP BY C.nom
+    ORDER BY moyenne_retard_minutes DESC;
+    """
+    with sqlite3.connect(DB_SQLITE) as conn:
+        df = pd.read_sql_query(query, conn)
+    return df
+
+def get_mongo_result():
+    print("🟢 [MONGO] Exécution Requête K (Version Finale)...")
+    client = pymongo.MongoClient(MONGO_URI)
+    db = client[MONGO_DB_NAME]
+
+    pipeline = [
+        # 1. On ne garde que les lignes avec trafic
+        { "$match": { "trafic.retard_minutes": { "$exists": True } } },
+
+        # 2. Pré-calcul stats ligne
+        { "$addFields": {
+            "line_sum": { "$sum": "$trafic.retard_minutes" },
+            "line_count": { "$size": "$trafic" }
+        }},
+
+        # 3. On déroule les véhicules (qui contiennent maintenant le chauffeur !)
+        { "$unwind": "$vehicules_cache" },
+
+        # 4. On garde les véhicules avec chauffeurs
+        { "$match": { "vehicules_cache.nom_chauffeur": { "$ne": None } } },
+
+        # 5. Groupement (Imitation parfaite du JOIN SQL)
+        { "$group": {
+            "_id": "$vehicules_cache.nom_chauffeur",
+            "total_delay": { "$sum": "$line_sum" },
+            "total_trips": { "$sum": "$line_count" }
+        }},
+
+        # 6. Moyenne
+        { "$project": {
+            "_id": 0,
+            "nom": "$_id",
+            "moyenne_retard_minutes": { "$divide": ["$total_delay", "$total_trips"] }
+        }},
+        { "$sort": { "moyenne_retard_minutes": -1 } }
+    ]
+
+    results = list(db.lignes.aggregate(pipeline))
+    client.close()
+    return pd.DataFrame(results)
+
+def comparer(df_sql, df_mongo):
+    print("\n📊 --- COMPARATIF ---")
+    
+    # Normalisation
+    df_sql = df_sql.sort_values("nom").reset_index(drop=True)
+    df_mongo = df_mongo.sort_values("nom").reset_index(drop=True)
+
+    print(f"Lignes SQL   : {len(df_sql)}")
+    print(f"Lignes Mongo : {len(df_mongo)}")
+
+    if df_sql.empty or df_mongo.empty:
+        print("❌ Un des résultats est vide !")
+        return
+
+    try:
+        # Tolérance très faible (1e-5) pour valider l'exactitude mathématique
+        pd.testing.assert_frame_equal(df_sql, df_mongo, check_dtype=False, rtol=1e-5)
+        print("\n✨ SUCCÈS : LES RÉSULTATS SONT STRICTEMENT IDENTIQUES ! ✨")
+        print(df_mongo.head(3))
+    except AssertionError:
+        print("\n❌ ÉCHEC : Différences trouvées.")
+        merged = pd.merge(df_sql, df_mongo, on="nom", suffixes=('_sql', '_mongo'), how='outer')
+        merged['diff'] = abs(merged['moyenne_retard_minutes_sql'] - merged['moyenne_retard_minutes_mongo'])
+        print(merged[merged['diff'] > 0.0001].head())
 
 if __name__ == "__main__":
-    debug_compare_D_direct()
+    reset_mongo_db()
+    migration_speciale_k()
+    df_sql = get_sql_result()
+    df_mongo = get_mongo_result()
+    comparer(df_sql, df_mongo)
