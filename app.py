@@ -505,9 +505,8 @@ def build_lignes_docs(
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents 'lignes'.
-    CORRECTIF MAJEUR : Injection explicite de 'nom_chauffeur' dans le cache 
-    'vehicules_cache' pour permettre une concordance parfaite avec SQL (Requête K).
+    Construit les documents 'lignes' avec une optimisation majeure pour la requête K
+    via l'injection d'un cache 'chauffeurs_cache'.
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -521,8 +520,7 @@ def build_lignes_docs(
     df_cap = tables["Capteur"]
     df_mes = tables["Mesure"]
 
-    # 1. Pré-calcul CO2
-    log_fn("⚡ [OPTIM] Pré-calcul des moyennes CO2 par ligne...", replace_last=False)
+    # 1. Pré-calcul CO2 (inchangé)
     co2_by_ligne: Dict[int, float] = {}
     if not df_cap.empty and not df_mes.empty:
         df_full = df_cap.merge(df_mes, on="id_capteur")
@@ -531,34 +529,32 @@ def build_lignes_docs(
         if not df_co2_ligne.empty:
             co2_by_ligne = df_co2_ligne.groupby("id_ligne")["valeur"].mean().to_dict()
 
-    # 2. Cache Véhicules avec Chauffeurs (C'EST ICI QUE TOUT CHANGE)
-    log_fn("⚡ [OPTIM] Construction du cache Véhicules avec Chauffeurs...", replace_last=False)
-    vehicules_cache_by_ligne: Dict[int, List[Dict]] = {}
+    # 2. OPTIMISATION : Construction du cache Chauffeurs direct
+    # On simule ici : JOIN Vehicule + JOIN Chauffeur groupé par ligne
+    log_fn("⚡ [OPTIM] Construction du cache Chauffeurs...", replace_last=False)
+    chauffeurs_cache_by_ligne: Dict[int, List[Dict]] = {}
     
-    if not df_v.empty:
-        # On joint les véhicules avec les chauffeurs AVANT de créer le cache.
-        # Cela permet d'avoir le nom du chauffeur associé au véhicule de manière statique,
-        # exactement comme le fait une jointure SQL (Vehicle JOIN Chauffeur).
-        df_v_merged = df_v.merge(df_c, on="id_chauffeur", how="left")
+    if not df_v.empty and not df_c.empty:
+        # Jointure Vehicule -> Chauffeur
+        df_vc = df_v.merge(df_c, on="id_chauffeur", how="inner") # Inner join comme en SQL
         
-        col_ligne_v = "id_ligne" if "id_ligne" in df_v_merged.columns else None
-        
-        if col_ligne_v:
-            for id_ligne, group in df_v_merged.groupby(col_ligne_v):
+        if "id_ligne" in df_vc.columns:
+            for id_ligne, group in df_vc.groupby("id_ligne"):
                 if pd.isna(id_ligne): continue
-                v_list = []
-                for _, v_row in group.iterrows():
-                    v_doc = {
-                        "id_vehicule": int(v_row["id_vehicule"]),
-                        "immatriculation": v_row.get("immatriculation"),
-                        "type_vehicule": v_row.get("type_vehicule"),
-                        # CORRECTION : On stocke le nom du chauffeur ici même s'il n'a pas d'horaire
-                        "nom_chauffeur": v_row.get("nom") if pd.notnull(v_row.get("nom")) else None
-                    }
-                    v_list.append(v_doc)
-                vehicules_cache_by_ligne[int(id_ligne)] = v_list
+                
+                # On crée une liste simple des chauffeurs de cette ligne
+                c_list = []
+                for _, row in group.iterrows():
+                    if pd.notnull(row.get("nom")):
+                        c_list.append({
+                            "id_chauffeur": int(row["id_chauffeur"]),
+                            "nom_chauffeur": row["nom"]
+                        })
+                
+                if c_list:
+                    chauffeurs_cache_by_ligne[int(id_ligne)] = c_list
 
-    # 3. Préparations standards (Quartiers)
+    # 3. Préparations standards (inchangé)
     quartiers_by_arret: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
         tmp = df_aq.merge(df_q[["id_quartier", "nom"]].rename(columns={"nom": "nom_quartier"}), on="id_quartier", how="left")
@@ -569,20 +565,19 @@ def build_lignes_docs(
                 for _, row in subset.iterrows() if pd.notnull(row["id_quartier"])
             ]
 
-    # 3b. Préparations standards (Capteurs)
     capteurs_ids_by_arret: Dict[int, List[int]] = {}
     if not df_cap.empty:
         for id_arret, group in df_cap.groupby("id_arret"):
             capteurs_ids_by_arret[id_arret] = [int(v) for v in group["id_capteur"].dropna().unique().tolist()]
 
-    # 3c. Construction Horaires avec id_ligne_officielle
+    # 4. Construction Horaires (inchangé, nécessaire pour les autres requêtes)
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
-        # On renomme id_ligne du véhicule pour ne pas le confondre plus tard
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
         df_h_full = df_h.merge(df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule"))
         df_h_full = df_h_full.merge(df_c, on="id_chauffeur", how="left", suffixes=("", "_chauffeur"))
-
+        
+        # ... (Logique de conversion date inchangée pour gain de place, garder le code original ici si besoin) ...
         for col in ("heure_prevue", "heure_effective", "date_embauche"):
             if col in df_h_full.columns:
                 df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
@@ -600,11 +595,10 @@ def build_lignes_docs(
                     vehicule["immatriculation"] = row.immatriculation
                 if hasattr(row, "type_vehicule") and pd.notnull(row.type_vehicule):
                     vehicule["type_vehicule"] = row.type_vehicule
-                
-                # On garde l'ID officiel pour les requêtes type "Est-ce le bon véhicule sur la bonne ligne ?"
                 if hasattr(row, "id_ligne_officielle") and pd.notnull(row.id_ligne_officielle):
                     vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
 
+            # Note: Pour la requête K, on utilise chauffeurs_cache, mais on laisse ceci pour la cohérence du document
             chauffeur = {}
             if hasattr(row, "id_chauffeur") and pd.notnull(row.id_chauffeur):
                 chauffeur["id_chauffeur"] = int(row.id_chauffeur)
@@ -612,20 +606,18 @@ def build_lignes_docs(
                     chauffeur["nom"] = row.nom
             
             if chauffeur: vehicule["chauffeur"] = chauffeur
-
             horaire = {}
             if hasattr(row, "id_horaire") and pd.notnull(row.id_horaire): horaire["id_horaire"] = int(row.id_horaire)
             if hasattr(row, "heure_prevue") and pd.notnull(row.heure_prevue): horaire["heure_prevue"] = row.heure_prevue.to_pydatetime()
             if hasattr(row, "passagers_estimes") and pd.notnull(row.passagers_estimes): horaire["passagers_estimes"] = int(row.passagers_estimes)
             
             if vehicule: horaire["vehicule"] = vehicule
-            
             horaires_by_arret.setdefault(int(row.id_arret), []).append(horaire)
             
             if idx % 5000 == 0: log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
         log_fn("", replace_last=False)
 
-    # 4. Suite (Arrets, Trafic...)
+    # 5. Arrets et Trafic
     arrets_by_ligne: Dict[int, List[Dict]] = {}
     for _, row in df_a.iterrows():
         if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]): continue
@@ -650,7 +642,7 @@ def build_lignes_docs(
             if row["id_trafic"] in incidents_by_trafic: tdoc["incidents"] = incidents_by_trafic[row["id_trafic"]]
             trafic_by_ligne.setdefault(int(row["id_ligne"]), []).append(tdoc)
 
-    # 5. Assemblage final
+    # 6. Assemblage final
     docs = []
     total = len(df_l)
     log_progress(0, total, "Assemblage Lignes", log_fn)
@@ -664,8 +656,9 @@ def build_lignes_docs(
         }
         if id_l in co2_by_ligne: doc["co2_moyen_ligne"] = co2_by_ligne[id_l]
         
-        # Injection du cache qui contient maintenant les noms des chauffeurs (CORRECTION APPLIQUÉE)
-        if id_l in vehicules_cache_by_ligne: doc["vehicules_cache"] = vehicules_cache_by_ligne[id_l]
+        # INJECTION DU CACHE OPTIMISÉ POUR LA REQUÊTE K
+        if id_l in chauffeurs_cache_by_ligne:
+            doc["chauffeurs_cache"] = chauffeurs_cache_by_ligne[id_l]
         
         if id_l in arrets_by_ligne: doc["arrets"] = arrets_by_ligne[id_l]
         if id_l in trafic_by_ligne: doc["trafic"] = trafic_by_ligne[id_l]
@@ -2261,46 +2254,66 @@ def query_J_mongo(db) -> pd.DataFrame:
 
 def query_K_mongo(db) -> pd.DataFrame:
     """
-    Requête K (MongoDB) - VERSION FINALE (Exactitude SQL).
-    Utilise le cache véhicule statique pour inclure même les chauffeurs sans horaires.
-    Performance : Instantanée (pas de $unwind sur les arrets/horaires).
+    Requête K (MongoDB) - VERSION HYPER-OPTIMISÉE.
+    Utilise le 'chauffeurs_cache' et évite l'unwind du trafic.
+    Performance : Quasi instantanée.
     """
     pipeline = [
-        # 1. On ne garde que les lignes qui ont du trafic (donc des retards potentiels)
-        { "$match": { "trafic.retard_minutes": { "$exists": True } } },
+        # 1. On ne garde que les lignes qui ont du trafic et des chauffeurs
+        { 
+            "$match": { 
+                "trafic": { "$exists": True, "$ne": [] },
+                "chauffeurs_cache": { "$exists": True, "$ne": [] }
+            } 
+        },
 
-        # 2. On calcule la somme et le nombre de retards pour la ligne ENTIÈRE.
-        # Cela correspond à la partie droite du JOIN SQL (Trafic).
-        { "$addFields": {
-            "line_total_delay": { "$sum": "$trafic.retard_minutes" },
-            "line_total_count": { "$size": "$trafic" }
-        }},
+        # 2. PRÉ-CALCUL : On calcule les stats de la ligne AVANT de dupliquer les données par chauffeur.
+        # C'est la clé de la performance : on réduit le tableau trafic à deux chiffres.
+        { 
+            "$addFields": {
+                "ligne_total_retard": { "$sum": "$trafic.retard_minutes" },
+                "ligne_nb_trajets": { "$size": "$trafic" }
+            } 
+        },
 
-        # 3. On déroule le cache des véhicules.
-        # C'est beaucoup plus rapide que de dérouler les horaires.
-        # C'est ici qu'on récupère TOUS les chauffeurs (y compris ceux qui ne roulent pas).
-        { "$unwind": "$vehicules_cache" },
+        # 3. On ne garde que ce qui est nécessaire pour alléger la mémoire
+        { 
+            "$project": {
+                "chauffeurs_cache": 1,
+                "ligne_total_retard": 1,
+                "ligne_nb_trajets": 1
+            }
+        },
 
-        # 4. On filtre ceux qui ont un chauffeur assigné
-        { "$match": { "vehicules_cache.nom_chauffeur": { "$ne": None } } },
+        # 4. On déroule la liste des chauffeurs (liste très courte, ~10-50 éléments max)
+        { "$unwind": "$chauffeurs_cache" },
 
-        # 5. Groupement par chauffeur.
-        # Si un chauffeur a 2 véhicules sur la même ligne, il sortira 2 fois du $unwind,
-        # donc on additionnera 2 fois les stats de la ligne.
-        # C'est exactement le comportement mathématique du JOIN SQL.
-        { "$group": {
-            "_id": "$vehicules_cache.nom_chauffeur",
-            "total_delay": { "$sum": "$line_total_delay" },
-            "total_trips": { "$sum": "$line_total_count" }
-        }},
+        # 5. Groupement par chauffeur (simule le GROUP BY C.nom du SQL)
+        # Si un chauffeur est sur 2 lignes, on additionne les totaux de retard et de trajets de ces 2 lignes.
+        { 
+            "$group": {
+                "_id": "$chauffeurs_cache.nom_chauffeur",
+                "cumul_retard": { "$sum": "$ligne_total_retard" },
+                "cumul_trajets": { "$sum": "$ligne_nb_trajets" }
+            }
+        },
 
-        # 6. Division finale pour obtenir la moyenne pondérée exacte.
-        { "$project": {
-            "_id": 0,
-            "nom": "$_id",
-            "moyenne_retard_minutes": { "$divide": ["$total_delay", "$total_trips"] }
-        }},
+        # 6. Calcul final de la moyenne
+        { 
+            "$project": {
+                "_id": 0,
+                "nom": "$_id",
+                "moyenne_retard_minutes": { 
+                    "$cond": [
+                        { "$eq": ["$cumul_trajets", 0] },
+                        0,
+                        { "$divide": ["$cumul_retard", "$cumul_trajets"] }
+                    ]
+                }
+            }
+        },
 
+        # 7. Tri
         { "$sort": { "moyenne_retard_minutes": -1 } }
     ]
 
