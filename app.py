@@ -3084,9 +3084,9 @@ def render_partie_6_ia(tab) -> None:
 
                     except Exception as exc:
                         st.error(f"Erreur Mongo : {exc}")
-                        
+
 # =====================================================================
-# MAIN STREAMLIT
+# MAIN STREAMLIT (CORRIGÉ - RESET TOTAL)
 # =====================================================================
 def main() -> None:
     """
@@ -3104,116 +3104,134 @@ def main() -> None:
 
     with st.sidebar:
         # =================================================
-        # 1. CONFIGURATION API (En premier)
+        # 1. STATUS MONITOR (LIVE DB)
         # =================================================
-        st.header("🔑 Configuration API")
+        st.header("📡 État du Système")
         
-        # Champ de texte connecté au session_state
+        # --- Check SQLite ---
+        sqlite_exists = os.path.exists(DB_FILE)
+        sqlite_icon = "✅" if sqlite_exists else "❌"
+        sqlite_msg = "Ready" if sqlite_exists else "Missing"
+        
+        # --- Check MongoDB ---
+        mongo_status = "Disconnected"
+        mongo_icon = "❌"
+        mongo_color = "red"
+        
+        try:
+            client_check = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=500)
+            client_check.admin.command("ping") 
+            
+            if MONGO_DB_NAME in client_check.list_database_names():
+                db_check = client_check[MONGO_DB_NAME]
+                count = db_check.lignes.count_documents({})
+                if count > 0:
+                    mongo_status = "Ready"
+                    mongo_icon = "✅"
+                    mongo_color = "green"
+                else:
+                    mongo_status = "Empty"
+                    mongo_icon = "⚠️"
+                    mongo_color = "orange"
+            else:
+                mongo_status = "Empty"
+                mongo_icon = "❌"
+                mongo_color = "red"
+            client_check.close()
+        except:
+            mongo_status = "Offline"
+            mongo_icon = "🚫"
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("SQLite")
+            st.markdown(f"**{sqlite_icon} {sqlite_msg}**")
+        with col2:
+            st.caption("MongoDB")
+            st.markdown(f":{mongo_color}[**{mongo_icon} {mongo_status}**]")
+
+        st.markdown("---")
+
+        # =================================================
+        # 2. ÉTAT DES CACHES (CSV)
+        # =================================================
+        st.header("🗂️ État des Caches")
+        
+        # SQL Cache
+        if st.session_state.get("queries_sql_executed", False):
+            st.success("Cache SQL : **Chargé**", icon="✅")
+        else:
+            st.info("Cache SQL : **Vide**", icon="⚪")
+
+        # Mongo Cache
+        if st.session_state.get("queries_mongo_executed", False):
+            st.success("Cache Mongo : **Chargé**", icon="✅")
+        else:
+            st.info("Cache Mongo : **Vide**", icon="⚪")
+
+        st.markdown("---")
+
+        # =================================================
+        # 3. CONFIGURATION API
+        # =================================================
+        st.header("🔑 Config API")
+        
         new_key = st.text_input(
             label="Groq API Key",
             value=st.session_state["groq_api_key"],
             type="password", 
-            help="Collez votre clé gsk_... ici. Elle sera utilisée pour les requêtes IA."
+            help="Collez votre clé gsk_... ici."
         )
 
-        # Si l'utilisateur change la clé
         if new_key != st.session_state["groq_api_key"]:
             st.session_state["groq_api_key"] = new_key
-            
-            # 1. Mise à jour en mémoire (pour l'utilisation immédiate)
             os.environ["GROQ_API_KEY"] = new_key
-            
-            # 2. Mise à jour du fichier .env physique (pour la persistance)
-            dotenv_path = ".env"
             try:
-                # set_key crée le fichier s'il n'existe pas, ou met à jour la ligne si elle existe
-                set_key(dotenv_path, "GROQ_API_KEY", new_key)
-                st.success("Clé sauvegardée dans .env ! ✅")
-            except Exception as e:
-                st.warning(f"Clé active mais non sauvegardée dans .env : {e}")
-            
-            time.sleep(1)
+                set_key(".env", "GROQ_API_KEY", new_key)
+                st.success("Sauvegardé ! ✅")
+            except Exception:
+                pass
+            time.sleep(0.5)
             st.rerun()
 
         st.markdown("---")
 
         # =================================================
-        # 2. ÉTAT DES BASES DE DONNÉES
+        # 4. DANGER ZONE (RESET TOTAL)
         # =================================================
-        st.header("📡 État des Bases de Données")
-
-        # --- A. SQLITE (SOURCE) ---
-        if os.path.exists(DB_FILE):
-            st.success("Source SQLite : **Trouvée**", icon="📄")
-        else:
-            st.error("Source SQLite : **Introuvable**", icon="❌")
-
-        # --- B. MONGODB (CIBLE) ---
-        server_ok, db_ok = check_connexion_details()
-
-        if server_ok:
-            st.success("Serveur MongoDB : **Connecté**", icon="✅")
-            
-            if db_ok:
-                # --- LOGIQUE D'INSPECTION DU CONTENU ---
-                try:
-                    # On ouvre une connexion temporaire pour compter
-                    temp_client = pymongo.MongoClient(MONGO_URI)
-                    temp_db = temp_client[MONGO_DB_NAME]
-                    
-                    # Liste des collections attendues
-                    cols_to_check = ["lignes", "quartiers", "capteurs"]
-                    details = []
-                    is_empty = True
-                    
-                    for col_name in cols_to_check:
-                        count = temp_db[col_name].count_documents({})
-                        if count > 0:
-                            is_empty = False
-                            details.append(f"▪️ **{col_name}** : {count} docs \n")
-                        else:
-                            details.append(f"▪️ **{col_name}** : ⚠️ 0 doc \n")
-                    
-                    temp_client.close()
-
-                    # Affichage conditionnel selon le contenu
-                    if is_empty:
-                        st.warning(f"Base '{MONGO_DB_NAME}' : **Vide**", icon="📭")
-                    else:
-                        st.success(f"Base '{MONGO_DB_NAME}' : **Remplie**", icon="🍃")
-                    
-                    # Affichage des détails dans un petit menu déroulant
-                    with st.expander("Voir le contenu"):
-                        st.markdown("\n".join(details))
-
-                except Exception:
-                    st.warning("Base existante (Lecture impossible)", icon="⚠️")
-            else:
-                st.warning(f"Base '{MONGO_DB_NAME}' : **Manquante**", icon="❌")
-        else:
-            st.error("Serveur MongoDB : **Déconnecté**", icon="❌")
-
-        st.markdown("---")
-
-        # =================================================
-        # 3. ÉTAT DES CACHES (CSV)
-        # =================================================
-        st.header("🗂️ État des Caches (CSV)")
-
-        # --- CACHE SQL ---
-        if st.session_state.get("queries_sql_executed", False):
-            st.success("Résultats SQL : **Chargés**", icon="✅")
-        else:
-            st.info("Résultats SQL : **Vides**", icon="⚪")
-
-        # --- CACHE MONGODB ---
-        if st.session_state.get("queries_mongo_executed", False):
-            st.success("Résultats Mongo : **Chargés**", icon="✅")
-        else:
-            st.info("Résultats Mongo : **Vides**", icon="⚪")    
+        st.subheader("🧨 Danger Zone")
         
+        if st.button("🗑️ DROP DB ET RESET CACHE", type="primary", use_container_width=True):
+            try:
+                # 1. Drop MongoDB
+                client = pymongo.MongoClient(MONGO_URI)
+                client.drop_database(MONGO_DB_NAME)
+                client.close()
+                
+                # 2. Reset Session State (MONGO)
+                st.session_state["queries_mongo_executed"] = False
+                st.session_state["resultats_mongo"] = {}
+                
+                # 3. Reset Session State (SQL) - AJOUTÉ ICI
+                st.session_state["queries_sql_executed"] = False
+                st.session_state["resultats_sql"] = {}
+
+                # 4. Reset Session State (MIGRATION)
+                st.session_state["migration_logs"] = [] 
+                st.session_state["migration_running"] = False
+                st.session_state["migration_done_msg"] = ""
+                
+                # 5. Reset Session State (IA)
+                st.session_state["ai_json_response"] = None
+
+                st.toast("Tout a été remis à zéro (SQL + Mongo) !", icon="💥")
+                time.sleep(1.5)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erreur : {e}")
+
     # =================================================
-    # CORPS PRINCIPAL (ONGLETS)
+    # CORPS PRINCIPAL
     # =================================================
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
