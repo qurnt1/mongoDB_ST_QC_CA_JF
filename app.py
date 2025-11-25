@@ -12,7 +12,7 @@ import pymongo
 from pymongo.errors import PyMongoError
 import streamlit as st
 from groq import Groq
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 
 
 DOSSIER_DATA = "data"
@@ -1511,16 +1511,18 @@ os.makedirs(DOSSIER_CSV, exist_ok=True)
 os.makedirs(DOSSIER_JSON, exist_ok=True)
 os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
 
-
 def init_session_state() -> None:
     """
-    Initialise les variables de session Streamlit nécessaires à l'IHM.
-
-    Cette fonction joue le rôle du constructeur d'une éventuelle classe
-    App (équivalent au __init__ d'une IHM classique).
+    Initialise les variables de session Streamlit.
     """
     if st.session_state.get("initialized", False):
         return
+
+    # --- AJOUT GESTION API KEY ---
+    # On charge la clé du .env par défaut dans la session
+    if "groq_api_key" not in st.session_state:
+        st.session_state["groq_api_key"] = os.getenv("GROQ_API_KEY", "")
+    # -----------------------------
 
     st.session_state["requetes_objectifs"] = REQUETES_OBJECTIFS
 
@@ -1536,15 +1538,10 @@ def init_session_state() -> None:
     st.session_state["migration_done_msg"] = ""
     st.session_state["migration_running"] = False
     
-    # NOUVELLES VARIABLES D'ÉTAT POUR LA Partie 6
     st.session_state["ai_json_response"] = None 
-    # Clé utilisée par le paramètre 'value' du st.text_area pour afficher le contenu
     st.session_state["ai_question_text_value"] = ""
 
     st.session_state["initialized"] = True
-
-
-
 
 # =====================================================================
 # Partie 1 : REQUÊTES SQLITE
@@ -2794,28 +2791,15 @@ def render_partie_5_comparaison(tab) -> None:
 # =====================================================================
 # Partie 6 : ASSISTANT IA GROQ / LLAMA3
 # =====================================================================
-
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
-    """
-    Interroge l'API Groq avec le contexte de schéma MongoDB pour générer
-    un pipeline d'agrégation correspondant à une question en langage
-    naturel.
+    # --- MODIFICATION ICI : On récupère la clé depuis la session ou l'input ---
+    api_key = st.session_state.get("groq_api_key", "")
+    
+    if not api_key or "gsk_" not in api_key:
+        return None, "Clé API Groq manquante ou invalide. Vérifiez la sidebar."
 
-    Paramètres
-    ----------
-    question : str
-        Question de l'utilisateur concernant les données.
-
-    Retour
-    ------
-    (dict | None, str | None)
-        - Objet JSON (collection + pipeline) si succès.
-        - Message d'erreur si échec, sinon None.
-    """
-    if not GROQ_API_KEY or "gsk_" not in GROQ_API_KEY:
-        return None, "Clé API Groq manquante ou invalide."
-
-    client = Groq(api_key=GROQ_API_KEY)
+    # On passe la clé dynamique au client
+    client = Groq(api_key=api_key)
 
     try:
         completion = client.chat.completions.create(
@@ -2835,7 +2819,7 @@ def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
 
     except Exception as exc:
         return None, str(exc)
-
+    
 def render_partie_6_ia(tab) -> None:
     """
     Affiche la Partie 6 : assistant IA pilotant la génération de requêtes
@@ -2979,19 +2963,12 @@ def render_partie_6_ia(tab) -> None:
 # =====================================================================
 # MAIN STREAMLIT
 # =====================================================================
-
 def main() -> None:
     """
     Point d'entrée de l'application Streamlit Paris 2055.
-
-    - Configure la page.
-    - Initialise l'état de session.
-    - Affiche les différents onglets (SQL, Migration, Mongo, Dashboard, IA).
     """
     st.set_page_config(
-        page_title=(
-            "Paris 2055 - Requêtes et Migration vers MongoDB"
-        ),
+        page_title="Paris 2055 - Requêtes et Migration vers MongoDB",
         layout="wide",
         initial_sidebar_state="expanded",
     )
@@ -3001,25 +2978,52 @@ def main() -> None:
     st.title("Paris 2055 - Requêtes et Migration vers MongoDB")
 
     with st.sidebar:
-        st.header("📡 État du Système")
+        # =================================================
+        # 1. CONFIGURATION API (En premier)
+        # =================================================
+        st.header("🔑 Configuration API")
+        
+        # Champ de texte connecté au session_state
+        new_key = st.text_input(
+            label="Groq API Key",
+            value=st.session_state["groq_api_key"],
+            type="password", 
+            help="Collez votre clé gsk_... ici. Elle sera utilisée pour les requêtes IA."
+        )
 
-        # --- 1. VÉRIFICATION SQLITE (SOURCE) ---
+        # Si l'utilisateur change la clé
+        if new_key != st.session_state["groq_api_key"]:
+            st.session_state["groq_api_key"] = new_key
+            
+            # 1. Mise à jour en mémoire (pour l'utilisation immédiate)
+            os.environ["GROQ_API_KEY"] = new_key
+            
+            # 2. Mise à jour du fichier .env physique (pour la persistance)
+            dotenv_path = ".env"
+            try:
+                # set_key crée le fichier s'il n'existe pas, ou met à jour la ligne si elle existe
+                set_key(dotenv_path, "GROQ_API_KEY", new_key)
+                st.success("Clé sauvegardée dans .env ! ✅")
+            except Exception as e:
+                st.warning(f"Clé active mais non sauvegardée dans .env : {e}")
+            
+            time.sleep(1)
+            st.rerun()
+
+        st.markdown("---")
+
+        # =================================================
+        # 2. ÉTAT DES BASES DE DONNÉES
+        # =================================================
+        st.header("📡 État des Bases de Données")
+
+        # --- A. SQLITE (SOURCE) ---
         if os.path.exists(DB_FILE):
             st.success("Source SQLite : **Trouvée**", icon="📄")
         else:
             st.error("Source SQLite : **Introuvable**", icon="❌")
 
-        
-
-        # --- 2. CACHE SQL ---
-        if st.session_state.get("queries_sql_executed", False):
-            st.success("Cache des requêtes SQL : **Chargé**", icon="🗃️")
-        else:
-            st.info("Cache des requêtes SQL : **Vide**", icon="⚪")
-
-        st.markdown("---")
-
-        # --- 3. VÉRIFICATION MONGODB (CIBLE) ---
+        # --- B. MONGODB (CIBLE) ---
         server_ok, db_ok = check_connexion_details()
 
         if server_ok:
@@ -3053,7 +3057,7 @@ def main() -> None:
                     else:
                         st.success(f"Base '{MONGO_DB_NAME}' : **Remplie**", icon="🍃")
                     
-                    # Affichage des détails dans un petit menu déroulant pour ne pas surcharger
+                    # Affichage des détails dans un petit menu déroulant
                     with st.expander("Voir le contenu"):
                         st.markdown("\n".join(details))
 
@@ -3064,16 +3068,28 @@ def main() -> None:
         else:
             st.error("Serveur MongoDB : **Déconnecté**", icon="❌")
 
-        # --- 4. CACHE MONGODB ---
-        if st.session_state.get("queries_mongo_executed", False):
-            st.success("Cache des requêtes MongoDB : **Chargé**", icon="🗃️")
-        else:
-            st.info("Cache des requêtes MongoDB : **Vide**", icon="⚪")    
-        
         st.markdown("---")
 
-    st.markdown("---")
+        # =================================================
+        # 3. ÉTAT DES CACHES (CSV)
+        # =================================================
+        st.header("🗂️ État des Caches (CSV)")
 
+        # --- CACHE SQL ---
+        if st.session_state.get("queries_sql_executed", False):
+            st.success("Résultats SQL : **Chargés**", icon="✅")
+        else:
+            st.info("Résultats SQL : **Vides**", icon="⚪")
+
+        # --- CACHE MONGODB ---
+        if st.session_state.get("queries_mongo_executed", False):
+            st.success("Résultats Mongo : **Chargés**", icon="✅")
+        else:
+            st.info("Résultats Mongo : **Vides**", icon="⚪")    
+        
+    # =================================================
+    # CORPS PRINCIPAL (ONGLETS)
+    # =================================================
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         [
             "Partie 1 : SQL",
@@ -3091,7 +3107,6 @@ def main() -> None:
     render_partie_4_streamlit(tab4)
     render_partie_5_comparaison(tab5)
     render_partie_6_ia(tab6)
-
 
 if __name__ == "__main__":
     main()
