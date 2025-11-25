@@ -724,13 +724,27 @@ def build_lignes_docs(
             continue
         id_ligne = int(row["id_ligne"])
         id_arret = int(row["id_arret"])
-        adoc: Dict[str, object] = {"id_arret": id_arret, "nom": row["nom"]}
+        
+        # --- MODIFICATION ICI : On récupère Lat/Long ---
+        adoc: Dict[str, object] = {
+            "id_arret": id_arret, 
+            "nom": row["nom"]
+        }
+        
+        # On vérifie si les colonnes existent et ne sont pas vides
+        if "latitude" in row and pd.notnull(row["latitude"]):
+            adoc["latitude"] = float(row["latitude"])
+        if "longitude" in row and pd.notnull(row["longitude"]):
+            adoc["longitude"] = float(row["longitude"])
+        # -----------------------------------------------
+
         if id_arret in quartiers_by_arret:
             adoc["quartiers"] = quartiers_by_arret[id_arret]
         if id_arret in horaires_by_arret:
             adoc["horaires"] = horaires_by_arret[id_arret]
         if id_arret in capteurs_ids_by_arret:
             adoc["capteurs_ids"] = capteurs_ids_by_arret[id_arret]
+            
         arrets_by_ligne.setdefault(id_ligne, []).append(adoc)
 
     # 6. Assemblage final

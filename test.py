@@ -1,225 +1,55 @@
-# test.py
-# ------------------------------------------------------------
-# Test de la requête L : SQL (SQLite) vs MongoDB
-# ------------------------------------------------------------
-import os
 import sqlite3
-
 import pandas as pd
-import pymongo
-from pymongo.errors import PyMongoError
+import os
 
-# ------------------------------------------------------------
-# Constantes (alignées sur app.py)
-# ------------------------------------------------------------
-DOSSIER_DATA = "data"
-DOSSIER_SQLITE = "sqlite"
-DB_FILE = os.path.join(DOSSIER_DATA, DOSSIER_SQLITE, "db", "paris2055.sqlite")
+# Chemin vers ta base (vérifie qu'il correspond bien à ton dossier)
+DB_FILE = "data/sqlite/db/paris2055.sqlite"
 
-MONGO_URI = "mongodb://127.0.0.1:27017/"
-MONGO_DB_NAME = "Paris2055"
-
-
-# ------------------------------------------------------------
-# Requête L en SQL / SQLite
-# ------------------------------------------------------------
-SQL_REQUETE_L = """
-SELECT L.nom_ligne,
-       COUNT(V.id_vehicule) AS total_vehicules,
-       SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END)
-           AS nb_electriques,
-       (CAST(SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) AS REAL)
-        / COUNT(V.id_vehicule)) * 100
-           AS pourcentage_electrique
-FROM Ligne AS L
-JOIN Vehicule AS V ON L.id_ligne = V.id_ligne
-WHERE L.type = 'Bus'
-GROUP BY L.nom_ligne
-ORDER BY pourcentage_electrique DESC;
-"""
-
-
-def executer_requete_L_sqlite() -> pd.DataFrame:
-    """
-    Exécute la requête L sur la base SQLite et renvoie un DataFrame.
-    """
+def inspecter_la_base():
     if not os.path.exists(DB_FILE):
-        raise FileNotFoundError(f"Fichier SQLite introuvable : {DB_FILE}")
-
-    with sqlite3.connect(DB_FILE) as conn:
-        df_sql = pd.read_sql_query(SQL_REQUETE_L, conn)
-
-    return df_sql
-
-
-# ------------------------------------------------------------
-# Requête L en MongoDB (copie de app.py)
-# ------------------------------------------------------------
-def query_L_mongo(db) -> pd.DataFrame:
-    """
-    Requête L (MongoDB) - corrigée (dédoublonnage des véhicules).
-    Objectif : % de véhicules électriques sur les lignes de Bus.
-    Résultat : nom_ligne, total_vehicules, nb_electriques, pourcentage_electrique
-    """
-    pipeline = [
-        {"$match": {"type": "Bus"}},
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
-
-        {"$match": {"arrets.horaires.vehicule.id_vehicule": {"$ne": None}}},
-
-        # Dédoublonnage des véhicules (un véhicule unique par ligne)
-        {
-            "$group": {
-                "_id": {
-                    "nom_ligne": "$nom_ligne",
-                    "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                },
-                "type_vehicule": {
-                    "$first": "$arrets.horaires.vehicule.type_vehicule"
-                },
-            }
-        },
-
-        # Comptage des véhicules uniques par ligne
-        {
-            "$group": {
-                "_id": "$_id.nom_ligne",
-                "total_vehicules": {"$sum": 1},
-                "nb_electriques": {
-                    "$sum": {
-                        "$cond": [
-                            {"$eq": ["$type_vehicule", "Electrique"]},
-                            1,
-                            0,
-                        ]
-                    }
-                },
-            }
-        },
-        {
-            "$addFields": {
-                "pourcentage_electrique": {
-                    "$cond": [
-                        {"$eq": ["$total_vehicules", 0]},
-                        0,
-                        {
-                            "$multiply": [
-                                {
-                                    "$divide": [
-                                        "$nb_electriques",
-                                        "$total_vehicules",
-                                    ]
-                                },
-                                100,
-                            ]
-                        },
-                    ]
-                },
-            }
-        },
-        {"$sort": {"pourcentage_electrique": -1}},
-        {
-            "$project": {
-                "_id": 0,
-                "nom_ligne": "$_id",
-                "total_vehicules": 1,
-                "nb_electriques": 1,
-                "pourcentage_electrique": 1,
-            }
-        },
-    ]
-
-    docs = list(db.lignes.aggregate(pipeline))
-    if not docs:
-        return pd.DataFrame(
-            columns=[
-                "nom_ligne",
-                "total_vehicules",
-                "nb_electriques",
-                "pourcentage_electrique",
-            ]
-        )
-
-    df = pd.DataFrame(docs)
-    # On force l'ordre des colonnes pour faciliter la comparaison
-    cols = ["nom_ligne", "total_vehicules", "nb_electriques", "pourcentage_electrique"]
-    return df[cols]
-
-
-# ------------------------------------------------------------
-# Affichage de debug
-# ------------------------------------------------------------
-def afficher_debug(df: pd.DataFrame, titre: str, n: int = 10) -> None:
-    """
-    Affiche quelques informations de debug sur un DataFrame :
-    shape, colonnes, dtypes, head(n).
-    """
-    print()
-    print("=" * 80)
-    print(titre)
-    print("=" * 80)
-
-    if df is None:
-        print("DataFrame : None")
+        print(f"❌ ERREUR : Le fichier {DB_FILE} est introuvable.")
+        print("Vérifie le chemin dans le script.")
         return
 
-    print(f"Shape : {df.shape}")
-    print("Colonnes :", list(df.columns))
-    print("Types :")
-    print(df.dtypes)
-    print()
-    print(f"Head({n}) :")
-    print(df.head(n))
-    print()
+    print(f"🔍 INSPECTION DE LA BASE : {DB_FILE}")
+    print("=" * 60)
 
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
 
-def main() -> None:
-    # --------------------------------------------------------
-    # 1) Requête L côté SQLite
-    # --------------------------------------------------------
-    print("### TEST REQUÊTE L - SQL vs MongoDB ###")
+    # 1. Récupérer la liste de toutes les tables
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = [row[0] for row in cursor.fetchall()]
 
-    try:
-        df_sql_L = executer_requete_L_sqlite()
-    except Exception as exc:
-        print("[ERREUR SQL] Impossible d'exécuter la requête L sur SQLite :", exc)
-        df_sql_L = None
+    # Mots-clés pour repérer la localisation
+    mots_cles_loc = ['lat', 'lon', 'geo', 'coord', 'position', 'quartier', 'nom']
 
-    afficher_debug(df_sql_L, "Résultat SQLite - Requête L (SQL)")
+    for table in tables:
+        print(f"\n📂 TABLE : {table.upper()}")
+        print("-" * 30)
 
-    # --------------------------------------------------------
-    # 2) Requête L côté MongoDB
-    # --------------------------------------------------------
-    try:
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
-        client.admin.command("ping")
-    except PyMongoError as exc:
-        print("[ERREUR MONGO] Impossible de se connecter à MongoDB :", exc)
-        return
+        # 2. Lire 3 lignes pour voir les données
+        try:
+            df = pd.read_sql_query(f"SELECT * FROM {table} LIMIT 3", conn)
+            
+            if df.empty:
+                print("⚠️  Table vide.")
+            else:
+                # Affichage des colonnes avec un indicateur si ça ressemble à de la localisation
+                print("Colonnes détectées :")
+                for col in df.columns:
+                    marker = "📍" if any(x in col.lower() for x in mots_cles_loc) else "  "
+                    print(f"{marker} {col}")
+                
+                print("\n👀 Aperçu des données :")
+                print(df.to_string(index=False))
+                
+        except Exception as e:
+            print(f"Erreur de lecture : {e}")
+            
+        print("=" * 60)
 
-    try:
-        if MONGO_DB_NAME not in client.list_database_names():
-            print(
-                f"[ERREUR MONGO] La base '{MONGO_DB_NAME}' n'existe pas. "
-                "Lance d'abord la migration (Partie 2 de l'application)."
-            )
-            client.close()
-            return
-
-        db = client[MONGO_DB_NAME]
-        df_mongo_L = query_L_mongo(db)
-
-    except Exception as exc:
-        print("[ERREUR MONGO] Erreur pendant l'exécution de la requête L :", exc)
-        df_mongo_L = None
-    finally:
-        client.close()
-
-    afficher_debug(df_mongo_L, "Résultat MongoDB - Requête L (MongoDB)")
-
-    print("### FIN DU TEST ###")
-
+    conn.close()
 
 if __name__ == "__main__":
-    main()
+    inspecter_la_base()
