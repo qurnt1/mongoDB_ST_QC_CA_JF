@@ -505,8 +505,8 @@ def build_lignes_docs(
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents 'lignes' avec une optimisation majeure pour la requête K
-    via l'injection d'un cache 'chauffeurs_cache'.
+    Construit les documents 'lignes' avec une optimisation majeure (Dénormalisation)
+    pour rendre les requêtes D et K instantanées.
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -529,20 +529,14 @@ def build_lignes_docs(
         if not df_co2_ligne.empty:
             co2_by_ligne = df_co2_ligne.groupby("id_ligne")["valeur"].mean().to_dict()
 
-    # 2. OPTIMISATION : Construction du cache Chauffeurs direct
-    # On simule ici : JOIN Vehicule + JOIN Chauffeur groupé par ligne
+    # 2. OPTIMISATION QUERY K : Cache Chauffeurs
     log_fn("⚡ [OPTIM] Construction du cache Chauffeurs...", replace_last=False)
     chauffeurs_cache_by_ligne: Dict[int, List[Dict]] = {}
-    
     if not df_v.empty and not df_c.empty:
-        # Jointure Vehicule -> Chauffeur
-        df_vc = df_v.merge(df_c, on="id_chauffeur", how="inner") # Inner join comme en SQL
-        
+        df_vc = df_v.merge(df_c, on="id_chauffeur", how="inner")
         if "id_ligne" in df_vc.columns:
             for id_ligne, group in df_vc.groupby("id_ligne"):
                 if pd.isna(id_ligne): continue
-                
-                # On crée une liste simple des chauffeurs de cette ligne
                 c_list = []
                 for _, row in group.iterrows():
                     if pd.notnull(row.get("nom")):
@@ -550,11 +544,60 @@ def build_lignes_docs(
                             "id_chauffeur": int(row["id_chauffeur"]),
                             "nom_chauffeur": row["nom"]
                         })
-                
                 if c_list:
                     chauffeurs_cache_by_ligne[int(id_ligne)] = c_list
 
-    # 3. Préparations standards (inchangé)
+    # 3. OPTIMISATION QUERY D : Cache Véhicules Uniques par Ligne
+    # On évite l'unwind monstrueux des horaires
+    log_fn("⚡ [OPTIM] Construction du cache Véhicules...", replace_last=False)
+    vehicules_cache_by_ligne: Dict[int, List[Dict]] = {}
+    if not df_v.empty:
+        # On suppose que df_v a une colonne id_ligne (la ligne officielle du véhicule)
+        for id_ligne, group in df_v.groupby("id_ligne"):
+            if pd.isna(id_ligne): continue
+            v_list = []
+            for _, row in group.iterrows():
+                if pd.notnull(row.get("immatriculation")):
+                    v_list.append({
+                        "id_vehicule": int(row["id_vehicule"]),
+                        "immatriculation": row["immatriculation"]
+                    })
+            if v_list:
+                vehicules_cache_by_ligne[int(id_ligne)] = v_list
+
+    # 4. OPTIMISATION QUERY K & A : Stats Trafic pré-calculées
+    # On évite de scanner le tableau trafic en lecture
+    log_fn("⚡ [OPTIM] Pré-calcul des stats Trafic...", replace_last=False)
+    stats_trafic_by_ligne: Dict[int, Dict] = {}
+    trafic_by_ligne: Dict[int, List[Dict]] = {}
+    
+    # On prépare aussi le détail pour les autres requêtes, mais on calcule les stats ici
+    incidents_by_trafic = {} 
+    if not df_i.empty:
+        for id_trafic, group in df_i.groupby("id_trafic"):
+            incidents_by_trafic[id_trafic] = group[["id_incident", "description", "gravite"]].to_dict("records")
+
+    if not df_t.empty:
+        # Calcul vectoriel Pandas (beaucoup plus rapide que Mongo)
+        stats_group = df_t.groupby("id_ligne")["retard_minutes"].agg(['sum', 'count', 'mean'])
+        
+        for id_ligne, row_stat in stats_group.iterrows():
+            stats_trafic_by_ligne[int(id_ligne)] = {
+                "total_retard": float(row_stat['sum']),
+                "nb_trajets": int(row_stat['count']),
+                "moyenne_precalc": float(row_stat['mean'])
+            }
+
+        # Construction standard du détail trafic
+        for _, row in df_t.iterrows():
+            if pd.isna(row["id_ligne"]): continue
+            tdoc = {"id_trafic": int(row["id_trafic"])}
+            if pd.notnull(row.get("retard_minutes")): tdoc["retard_minutes"] = int(row["retard_minutes"])
+            if row["id_trafic"] in incidents_by_trafic: tdoc["incidents"] = incidents_by_trafic[row["id_trafic"]]
+            trafic_by_ligne.setdefault(int(row["id_ligne"]), []).append(tdoc)
+
+    # 5. Préparations standards (Arrêts, Quartiers, Horaires...)
+    # (Code inchangé pour la structure Arrets/Horaires, on le garde pour les requêtes B, L, etc.)
     quartiers_by_arret: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
         tmp = df_aq.merge(df_q[["id_quartier", "nom"]].rename(columns={"nom": "nom_quartier"}), on="id_quartier", how="left")
@@ -570,17 +613,12 @@ def build_lignes_docs(
         for id_arret, group in df_cap.groupby("id_arret"):
             capteurs_ids_by_arret[id_arret] = [int(v) for v in group["id_capteur"].dropna().unique().tolist()]
 
-    # 4. Construction Horaires (inchangé, nécessaire pour les autres requêtes)
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
         df_h_full = df_h.merge(df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule"))
-        df_h_full = df_h_full.merge(df_c, on="id_chauffeur", how="left", suffixes=("", "_chauffeur"))
-        
-        # ... (Logique de conversion date inchangée pour gain de place, garder le code original ici si besoin) ...
-        for col in ("heure_prevue", "heure_effective", "date_embauche"):
-            if col in df_h_full.columns:
-                df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
+        for col in ["heure_prevue"]:
+             if col in df_h_full.columns: df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
 
         total_rows = len(df_h_full)
         log_progress(0, total_rows, "Groupement Horaires/Arrêts", log_fn)
@@ -588,59 +626,33 @@ def build_lignes_docs(
         for idx, row in enumerate(df_h_full.itertuples(index=False), start=1):
             if pd.isna(row.id_arret): continue
             
+            # Construction allégée
             vehicule = {}
-            if getattr(row, "id_vehicule", None) is not None and not pd.isna(row.id_vehicule):
+            if getattr(row, "id_vehicule", None) and not pd.isna(row.id_vehicule):
                 vehicule["id_vehicule"] = int(row.id_vehicule)
-                if hasattr(row, "immatriculation") and pd.notnull(row.immatriculation):
-                    vehicule["immatriculation"] = row.immatriculation
-                if hasattr(row, "type_vehicule") and pd.notnull(row.type_vehicule):
-                    vehicule["type_vehicule"] = row.type_vehicule
+                if hasattr(row, "type_vehicule"): vehicule["type_vehicule"] = row.type_vehicule
+                if hasattr(row, "immatriculation"): vehicule["immatriculation"] = row.immatriculation
                 if hasattr(row, "id_ligne_officielle") and pd.notnull(row.id_ligne_officielle):
                     vehicule["id_ligne_officielle"] = int(row.id_ligne_officielle)
 
-            # Note: Pour la requête K, on utilise chauffeurs_cache, mais on laisse ceci pour la cohérence du document
-            chauffeur = {}
-            if hasattr(row, "id_chauffeur") and pd.notnull(row.id_chauffeur):
-                chauffeur["id_chauffeur"] = int(row.id_chauffeur)
-                if hasattr(row, "nom") and pd.notnull(row.nom):
-                    chauffeur["nom"] = row.nom
-            
-            if chauffeur: vehicule["chauffeur"] = chauffeur
             horaire = {}
-            if hasattr(row, "id_horaire") and pd.notnull(row.id_horaire): horaire["id_horaire"] = int(row.id_horaire)
             if hasattr(row, "heure_prevue") and pd.notnull(row.heure_prevue): horaire["heure_prevue"] = row.heure_prevue.to_pydatetime()
             if hasattr(row, "passagers_estimes") and pd.notnull(row.passagers_estimes): horaire["passagers_estimes"] = int(row.passagers_estimes)
-            
             if vehicule: horaire["vehicule"] = vehicule
-            horaires_by_arret.setdefault(int(row.id_arret), []).append(horaire)
             
-            if idx % 5000 == 0: log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
+            horaires_by_arret.setdefault(int(row.id_arret), []).append(horaire)
+            if idx % 10000 == 0: log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
         log_fn("", replace_last=False)
 
-    # 5. Arrets et Trafic
     arrets_by_ligne: Dict[int, List[Dict]] = {}
     for _, row in df_a.iterrows():
         if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]): continue
         id_l, id_a = int(row["id_ligne"]), int(row["id_arret"])
         adoc = {"id_arret": id_a, "nom": row["nom"]}
         if id_a in quartiers_by_arret: adoc["quartiers"] = quartiers_by_arret[id_a]
-        if id_a in capteurs_ids_by_arret: adoc["capteurs_ids"] = capteurs_ids_by_arret[id_a]
         if id_a in horaires_by_arret: adoc["horaires"] = horaires_by_arret[id_a]
+        if id_a in capteurs_ids_by_arret: adoc["capteurs_ids"] = capteurs_ids_by_arret[id_a]
         arrets_by_ligne.setdefault(id_l, []).append(adoc)
-
-    trafic_by_ligne: Dict[int, List[Dict]] = {}
-    incidents_by_trafic = {} 
-    if not df_i.empty:
-        for id_trafic, group in df_i.groupby("id_trafic"):
-            incidents_by_trafic[id_trafic] = group[["id_incident", "description", "gravite"]].to_dict("records")
-            
-    if not df_t.empty:
-        for _, row in df_t.iterrows():
-            if pd.isna(row["id_ligne"]): continue
-            tdoc = {"id_trafic": int(row["id_trafic"])}
-            if pd.notnull(row.get("retard_minutes")): tdoc["retard_minutes"] = int(row["retard_minutes"])
-            if row["id_trafic"] in incidents_by_trafic: tdoc["incidents"] = incidents_by_trafic[row["id_trafic"]]
-            trafic_by_ligne.setdefault(int(row["id_ligne"]), []).append(tdoc)
 
     # 6. Assemblage final
     docs = []
@@ -654,12 +666,23 @@ def build_lignes_docs(
             "nom_ligne": row.get("nom_ligne"),
             "type": row.get("type")
         }
-        if id_l in co2_by_ligne: doc["co2_moyen_ligne"] = co2_by_ligne[id_l]
         
-        # INJECTION DU CACHE OPTIMISÉ POUR LA REQUÊTE K
+        # Injection CO2
+        if id_l in co2_by_ligne: 
+            doc["co2_moyen_ligne"] = co2_by_ligne[id_l]
+
+        # Injection Cache Chauffeurs (Pour Query K)
         if id_l in chauffeurs_cache_by_ligne:
             doc["chauffeurs_cache"] = chauffeurs_cache_by_ligne[id_l]
-        
+
+        # Injection Cache Véhicules (Pour Query D)
+        if id_l in vehicules_cache_by_ligne:
+            doc["vehicules_cache"] = vehicules_cache_by_ligne[id_l]
+            
+        # Injection Stats Trafic (Pour Query K et A)
+        if id_l in stats_trafic_by_ligne:
+            doc["stats_trafic"] = stats_trafic_by_ligne[id_l]
+
         if id_l in arrets_by_ligne: doc["arrets"] = arrets_by_ligne[id_l]
         if id_l in trafic_by_ligne: doc["trafic"] = trafic_by_ligne[id_l]
         if pd.notnull(row.get("frequentation_moyenne")): doc["frequentation_moyenne"] = float(row["frequentation_moyenne"])
@@ -1868,73 +1891,39 @@ def query_C_mongo(db) -> pd.DataFrame:
 
 def query_D_mongo(db) -> pd.DataFrame:
     """
-    Requête D (MongoDB) - Version V5 (Lookup Inversé).
-    Objectif : Récupérer la moyenne CO2 basée sur l'ID officiel du véhicule,
-    garantissant une correspondance à 100% avec le SQL.
+    Requête D (MongoDB) - ULTRA OPTIMISÉE.
+    Utilise 'vehicules_cache' et 'co2_moyen_ligne'.
+    Complexité: O(L * V_per_line) au lieu de O(L * Arrets * Horaires).
     """
     pipeline = [
-        # 1. On descend directement aux véhicules (peu importe la ligne porteuse)
-        {"$unwind": "$arrets"},
-        {"$unwind": "$arrets.horaires"},
+        # 1. On ne prend que les lignes qui ont une moyenne CO2 et des véhicules
+        {
+            "$match": {
+                "co2_moyen_ligne": {"$exists": True, "$ne": None},
+                "vehicules_cache": {"$exists": True, "$ne": []}
+            }
+        },
+        # 2. On garde juste ce dont on a besoin
+        {
+            "$project": {
+                "vehicules_cache": 1,
+                "co2_moyen_ligne": 1
+            }
+        },
+        # 3. On "sort" les véhicules de leur tableau
+        {"$unwind": "$vehicules_cache"},
         
-        # 2. On ne garde que les véhicules valides avec un ID officiel
-        # (Ce champ a été ajouté lors de la migration personnalisée)
-        {"$match": {
-            "arrets.horaires.vehicule.id_vehicule": {"$ne": None},
-            "arrets.horaires.vehicule.id_ligne_officielle": {"$ne": None}
-        }},
-
-        # 3. Projection simplifiée pour préparer le Lookup
+        # 4. Projection finale : le véhicule hérite du CO2 de sa ligne
         {
             "$project": {
                 "_id": 0,
-                "id_vehicule": "$arrets.horaires.vehicule.id_vehicule",
-                "immatriculation": "$arrets.horaires.vehicule.immatriculation",
-                # La clé de jointure fiable
-                "target_line_id": "$arrets.horaires.vehicule.id_ligne_officielle"
+                "id_vehicule": "$vehicules_cache.id_vehicule",
+                "immatriculation": "$vehicules_cache.immatriculation",
+                "moyenne_co2": "$co2_moyen_ligne"
             }
         },
-
-        # 4. LE LOOKUP CORRECTEUR : On va chercher le CO2 de la ligne OFFICIELLE
-        {
-            "$lookup": {
-                "from": "capteurs",
-                "localField": "target_line_id",   # On utilise l'ID officiel du véhicule
-                "foreignField": "arret.id_ligne", # On cherche les capteurs liés à cette ligne
-                "pipeline": [
-                    {"$match": {"type_capteur": "CO2"}},
-                    {"$unwind": "$mesures"},
-                    {"$group": {"_id": None, "avg": {"$avg": "$mesures.valeur"}}}
-                ],
-                "as": "co2_data"
-            }
-        },
-        
-        # On ne garde que les véhicules dont la ligne officielle a des capteurs CO2 (Inner Join)
-        {"$unwind": "$co2_data"}, 
-
-        # 5. Groupement final (Dédoublonnage)
-        # Tous les doublons du véhicule (dus aux arrêts partagés) auront ici la même moyenne.
-        {
-            "$group": {
-                "_id": {
-                    "id": "$id_vehicule",
-                    "immat": "$immatriculation"
-                },
-                "moyenne_co2": {"$first": "$co2_data.avg"}
-            }
-        },
-
-        # 6. Formatage final
-        {
-            "$project": {
-                "_id": 0,
-                "id_vehicule": "$_id.id",
-                "immatriculation": "$_id.immat",
-                "moyenne_co2": 1
-            }
-        },
-        {"$sort": {"moyenne_co2": -1}},
+        # 5. Tri
+        {"$sort": {"moyenne_co2": -1}}
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
@@ -2251,54 +2240,44 @@ def query_J_mongo(db) -> pd.DataFrame:
     df = aggregate_to_df(db.capteurs, pipeline)
     return df[["nom_ligne", "moyenne_temperature"]] if not df.empty else df
 
-
 def query_K_mongo(db) -> pd.DataFrame:
     """
-    Requête K (MongoDB) - VERSION HYPER-OPTIMISÉE.
-    Utilise le 'chauffeurs_cache' et évite l'unwind du trafic.
-    Performance : Quasi instantanée.
+    Requête K (MongoDB) - ULTRA OPTIMISÉE.
+    Utilise 'chauffeurs_cache' et 'stats_trafic' (pré-calculé).
+    Évite totalement de lire le tableau 'trafic'.
     """
     pipeline = [
-        # 1. On ne garde que les lignes qui ont du trafic et des chauffeurs
+        # 1. Filtre : Lignes avec chauffeurs et stats trafic existantes
         { 
             "$match": { 
-                "trafic": { "$exists": True, "$ne": [] },
+                "stats_trafic": { "$exists": True },
                 "chauffeurs_cache": { "$exists": True, "$ne": [] }
             } 
         },
 
-        # 2. PRÉ-CALCUL : On calcule les stats de la ligne AVANT de dupliquer les données par chauffeur.
-        # C'est la clé de la performance : on réduit le tableau trafic à deux chiffres.
-        { 
-            "$addFields": {
-                "ligne_total_retard": { "$sum": "$trafic.retard_minutes" },
-                "ligne_nb_trajets": { "$size": "$trafic" }
-            } 
-        },
-
-        # 3. On ne garde que ce qui est nécessaire pour alléger la mémoire
+        # 2. Projection légère
         { 
             "$project": {
                 "chauffeurs_cache": 1,
-                "ligne_total_retard": 1,
-                "ligne_nb_trajets": 1
+                "total_retard": "$stats_trafic.total_retard",
+                "nb_trajets": "$stats_trafic.nb_trajets"
             }
         },
 
-        # 4. On déroule la liste des chauffeurs (liste très courte, ~10-50 éléments max)
+        # 3. On déroule la liste des chauffeurs (liste très courte)
         { "$unwind": "$chauffeurs_cache" },
 
-        # 5. Groupement par chauffeur (simule le GROUP BY C.nom du SQL)
-        # Si un chauffeur est sur 2 lignes, on additionne les totaux de retard et de trajets de ces 2 lignes.
+        # 4. Groupement par chauffeur 
+        # (Si un chauffeur est sur 2 lignes, on additionne les stats pré-calculées)
         { 
             "$group": {
                 "_id": "$chauffeurs_cache.nom_chauffeur",
-                "cumul_retard": { "$sum": "$ligne_total_retard" },
-                "cumul_trajets": { "$sum": "$ligne_nb_trajets" }
+                "cumul_retard": { "$sum": "$total_retard" },
+                "cumul_trajets": { "$sum": "$nb_trajets" }
             }
         },
 
-        # 6. Calcul final de la moyenne
+        # 5. Calcul final de la moyenne
         { 
             "$project": {
                 "_id": 0,
@@ -2313,7 +2292,7 @@ def query_K_mongo(db) -> pd.DataFrame:
             }
         },
 
-        # 7. Tri
+        # 6. Tri
         { "$sort": { "moyenne_retard_minutes": -1 } }
     ]
 
