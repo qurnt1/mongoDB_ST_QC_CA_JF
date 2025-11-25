@@ -13,6 +13,7 @@ from pymongo.errors import PyMongoError
 import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv, set_key
+import re
 
 
 DOSSIER_DATA = "data"
@@ -34,37 +35,79 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 SCHEMA_CONTEXT = """
-Tu es un expert MongoDB et Python. Ton but est de traduire une question naturelle en requête d'agrégation MongoDB.
-Voici le schéma de la base de données 'Paris2055' :
+Tu es un expert MongoDB et Python. Ton but est de traduire une question naturelle en pipeline d'agrégation MongoDB.
+
+Voici le schéma EXACT de la base de données 'Paris2055' (Optimisée Document) :
 
 1. Collection 'lignes' :
-    - Documents : { "id_ligne": int, "nom_ligne": str, "type": str (Bus, Tramway...), "frequentation_moyenne": int, "arrets": [...], "trafic": [{ "retard_minutes": int, "incidents": [...] }] }
+   - C'est la collection principale pour le trafic, les véhicules et le personnel.
+   - Structure :
+     {
+       "id_ligne": int,
+       "nom_ligne": str,
+       "type": str (ex: "Bus", "Tramway", "Metro"),
+       "frequentation_moyenne": float,
+       "co2_moyen_ligne": float (Pré-calculé),
+       
+       # CHAMPS OPTIMISÉS (CACHES) - À utiliser en priorité :
+       "stats_trafic": { "total_retard": float, "nb_trajets": int, "moyenne_precalc": float },
+       "vehicules_cache": [ { "id_vehicule": int, "immatriculation": str, "type_vehicule": str (ex: "Electrique", "Diesel") } ],
+       "chauffeurs_cache": [ { "id_chauffeur": int, "nom_chauffeur": str } ],
+
+       # CHAMPS DÉTAILLÉS (Lourds) :
+       "arrets": [ { "id_arret": int, "nom": str, "quartiers": [...] } ],
+       "trafic": [ { "id_trafic": int, "retard_minutes": int, "incidents": [...] } ]
+     }
 
 2. Collection 'capteurs' :
-    - Documents : { "id_capteur": int, "type_capteur": str (Bruit, CO2, Temperature), "mesures": [{ "valeur": float, "horodatage": date }], "arret": { "nom_ligne": str, "nom_arret": str } }
+   - Pour les mesures environnementales (Bruit, CO2, Temperature).
+   - Structure :
+     {
+       "id_capteur": int,
+       "type_capteur": str,
+       "position": { "type": "Point", "coordinates": [long, lat] },
+       "arret": { "id_arret": int, "nom": str, "nom_ligne": str }, # Info dénormalisée
+       "mesures": [ { "valeur": float, "horodatage": date, "unite": str } ]
+     }
 
 3. Collection 'quartiers' :
-    - Documents : { "nom": str, "arrets": [...] }
+   - Pour les analyses géographiques.
+   - Structure :
+     {
+       "id_quartier": int,
+       "nom": str,
+       "geom": { "type": "Polygon", ... },
+       "arrets": [ { "id_arret": int, "nom": str, "nom_ligne": str } ] # Liste des arrêts dans ce quartier
+     }
 
-RÈGLES STRICTES DE GÉNÉRATION :
-1. Tu dois répondre UNIQUEMENT un objet JSON valide au format :
-    {
-      "collection": "nom_collection",
-      "pipeline": [ ... ]
-    }
+RÈGLES DE GÉNÉRATION DU PIPELINE :
 
-2. **RÈGLE D'AFFICHAGE (PROJECTION)** : 
-    Tu dois OBLIGATOIREMENT ajouter une étape `"$project"` à la fin du pipeline pour nettoyer le résultat.
-    - Garde UNIQUEMENT le nom de l'entité (ex: `nom_ligne`, `nom`, ou `arret.nom_ligne`) et la valeur calculée/demandée.
-    - SUPPRIME systématiquement `_id` (`"_id": 0`).
-    - SUPPRIME systématiquement les listes lourdes (`arrets`, `trafic`, `mesures`) sauf si l'utilisateur demande explicitement de les voir.
+1. FORMAT DE SORTIE :
+   Tu dois répondre UNIQUEMENT un objet JSON valide :
+   {
+     "collection": "nom_de_la_collection_cible",
+     "pipeline": [ ... liste des étapes d'agrégation ... ]
+   }
 
-3. **RÈGLE D'IMPOSSIBILITÉ** : 
-    Si la question de l'utilisateur n'a ABSOLUMENT rien à voir avec le schéma de la base de données, ou s'il est techniquement impossible d'y répondre avec une requête MongoDB (par exemple, une question de philosophie ou une requête impossible même avec l'agrégation), tu dois retourner le JSON suivant, sans changer la collection :
-    {
-      "collection": "lignes",
-      "pipeline": []
-    }
+2. RÈGLES MÉTIER & OPTIMISATION :
+   - Si la question porte sur les VÉHICULES (ex: "combien de bus électriques"), utilise `vehicules_cache` dans la collection `lignes`. N'invente pas de collection "vehicules".
+   - Si la question porte sur les CHAUFFEURS, utilise `chauffeurs_cache` dans `lignes`.
+   - Si la question porte sur le RETARD GLOBAL d'une ligne, privilégie `stats_trafic` si disponible, sinon déroule `trafic`.
+   - Pour filtrer une liste (ex: garder les véhicules électriques), utilise `$unwind` sur le cache correspondant puis `$match`.
+
+3. RÈGLE DE PROJECTION (OBLIGATOIRE) :
+   - Termine TOUJOURS par un `"$project"`.
+   - Supprime `_id` (`"_id": 0`).
+   - Ne renvoie QUE les champs utiles à la réponse (ex: `nom_ligne`, `valeur_calculee`).
+   - NE RENVOIE JAMAIS les listes complètes (`trafic`, `mesures`, `arrets`) sauf demande explicite.
+
+4. EXEMPLES :
+   - "Moyenne retard par chauffeur ?" -> Collection: `lignes` -> $unwind `chauffeurs_cache` -> $project nom & stats_trafic.moyenne_precalc.
+   - "Quartiers les plus bruyants ?" -> Collection: `quartiers` -> $lookup sur capteurs (via arrets) -> moyenne.
+
+5. CAS D'ERREUR :
+   Si la question est hors sujet (ex: "Recette de cuisine"), renvoie :
+   { "collection": "lignes", "pipeline": [] }
 """
 
 # =====================================================================
@@ -2833,174 +2876,215 @@ def render_partie_5_comparaison(tab) -> None:
 # Partie 6 : ASSISTANT IA GROQ / LLAMA3
 # =====================================================================
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
-    # --- MODIFICATION ICI : On récupère la clé depuis la session ou l'input ---
     api_key = st.session_state.get("groq_api_key", "")
     
     if not api_key or "gsk_" not in api_key:
-        return None, "Clé API Groq manquante ou invalide. Vérifiez la sidebar."
+        return None, "Clé API Groq manquante ou invalide."
 
-    # On passe la clé dynamique au client
     client = Groq(api_key=api_key)
 
+    try:
+        # On utilise Llama 3.3 avec le mode JSON natif
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile", 
+            messages=[
+                {
+                    "role": "system", 
+                    "content": SCHEMA_CONTEXT + "\n\nIMPORTANT : Analyse bien la demande. Si on cherche une moyenne ou un total, vérifie d'abord si 'stats_trafic' ou 'co2_moyen_ligne' existent pour optimiser. Réponds UNIQUEMENT au format JSON."
+                },
+                {"role": "user", "content": f"La question est : {question}"},
+            ],
+            temperature=0, # Zéro créativité = Maximum de rigueur pour le code
+            stream=False,
+            response_format={"type": "json_object"} # Force le format JSON valide
+        )
+
+        response_content = completion.choices[0].message.content
+        
+        # Plus besoin de nettoyage complexe, c'est du JSON pur
+        data = json.loads(response_content)
+        return data, None
+
+    except json.JSONDecodeError:
+        return None, f"L'IA n'a pas généré un JSON valide :\n{response_content}"
+    except Exception as exc:
+        return None, str(exc)
+
+def analyser_resultats_avec_ia(question_user: str, df: pd.DataFrame, api_key: str) -> str:
+    """
+    Analyse intelligente qui s'adapte à la forme des données :
+    - Valeur unique -> Contexte simple.
+    - Liste/Tableau -> Analyse statistique (Min/Max/Tendances).
+    """
+    if df.empty:
+        return "Je n'ai trouvé aucun résultat à analyser."
+
+    # 1. Analyse de la structure du résultat
+    nb_lignes = len(df)
+    nb_cols = len(df.columns)
+    
+    data_sample = df.head(10).to_string(index=False)
+    stats_context = ""
+    consigne_adaptative = ""
+
+    # 2. Scénario A : Valeur unique ou Ligne unique (Pas de stats comparatives)
+    if nb_lignes == 1:
+        consigne_adaptative = (
+            "Le résultat est une donnée UNIQUE (une seule ligne). "
+            "NE FAIS PAS de calculs statistiques (pas de min/max/moyenne/écart-type). "
+            "Contente-toi d'énoncer le chiffre ou l'information clairement en réponse à la question."
+        )
+    
+    # 3. Scénario B : Liste de données (Besoin de comparaison)
+    else:
+        # On ne calcule les stats que s'il y a des colonnes numériques
+        nums = df.select_dtypes(include=['number'])
+        if not nums.empty:
+            try:
+                stats_desc = nums.describe().to_string()
+                stats_context = f"\nSTATISTIQUES DESCRIPTIVES (Aide pour toi) :\n{stats_desc}\n"
+                consigne_adaptative = (
+                    "Le résultat contient PLUSIEURS lignes. "
+                    "Tu DOIS analyser les variations pour donner du relief :\n"
+                    "- Cite le MAX et le MIN si pertinent.\n"
+                    "- Situe les résultats par rapport à la MOYENNE si tu l'as.\n"
+                    "- Ne liste pas juste les lignes, fais une synthèse."
+                )
+            except:
+                consigne_adaptative = "Résume les points clés de cette liste textuelle."
+        else:
+            consigne_adaptative = "Ceci est une liste de texte. Fais une synthèse des éléments principaux."
+
+    # 4. Construction du prompt
+    prompt = (
+        f"CONTEXTE : L'utilisateur a demandé : '{question_user}'.\n\n"
+        f"DONNÉES (Extrait) :\n{data_sample}\n"
+        f"{stats_context}\n"
+        f"CONSIGNE : Agis comme un Data Analyst. {consigne_adaptative}\n"
+        "Réponds en 2 phrases maximum, ton naturel et professionnel."
+    )
+
+    client = Groq(api_key=api_key)
     try:
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": SCHEMA_CONTEXT},
-                {"role": "user", "content": f"La question est : {question}"},
+                {"role": "system", "content": "Tu es un assistant analyste de données concis."},
+                {"role": "user", "content": prompt},
             ],
-            temperature=0,
-            stream=False,
-            response_format={"type": "json_object"},
+            temperature=0.3, # Temperature basse pour rester factuel
         )
-
-        response_content = completion.choices[0].message.content
-        data = json.loads(response_content)
-        return data, None
-
-    except Exception as exc:
-        return None, str(exc)
-    
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Analyse indisponible : {str(e)}"
+      
 def render_partie_6_ia(tab) -> None:
-    """
-    Affiche la Partie 6 : assistant IA pilotant la génération de requêtes
-    MongoDB via Groq / Llama 3.
-    """
     QUESTION_BUTTONS = [
         "la moyenne des retards (en minutes) pour chaque ligne de transport.",
-
         "le nombre moyen de passagers transportés par jour pour chaque ligne.",
-
         "le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
-
         "les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts."
     ]
 
-    # Initialisation de l'état pour la réponse JSON de l'IA
     if "ai_json_response" not in st.session_state:
         st.session_state["ai_json_response"] = None
+    if "question_a_traiter" not in st.session_state:
+        st.session_state["question_a_traiter"] = ""
+
+    def set_question(q: str):
+        st.session_state["question_a_traiter"] = q
+    def set_question_from_input():
+        st.session_state["question_a_traiter"] = st.session_state.get("ai_question_input", "")
 
     with tab:
-        st.subheader("Partie 6 : Assistant IA 🤖 (Powered by Groq/Llama3)")
-        st.markdown(
-            "Posez n'importe quelle question sur vos données. "
-            "L'IA va générer la requête MongoDB complexe pour vous.",
-        )
+        st.subheader("Partie 6 : Assistant IA 🧠 (Llama 3.3)")
+        st.markdown("Modèle : **llama-3.3-70b-versatile** (Rapide, Stable & Mode JSON Strict)")
 
-        # Zone de saisie manuelle : on NE modifie jamais la clé 'ai_question_input' dans le code
-        question = st.text_area(
-            "💬 Posez votre question :",
-            key="ai_question_input",
-            height=70,
-        )
+        # --- HAUT : INPUT ---
+        st.text_area("💬 Posez votre question :", key="ai_question_input", height=70)
+        st.button("✨ Générer & Exécuter", type="primary", on_click=set_question_from_input)
 
-        # Affichage du dernier JSON généré par l'IA (si disponible)
-        if st.session_state.get("ai_json_response"):
-            with st.expander(
-                f"Voir le dernier JSON généré par l'IA "
-                f"(Cible : {st.session_state['ai_json_response'].get('collection', 'N/A')})",
-                expanded=True,
-            ):
-                st.code(
-                    json.dumps(
-                        st.session_state["ai_json_response"],
-                        indent=2,
-                        ensure_ascii=False,
-                    ),
-                    language="json",
-                )
+        # --- MILIEU : RÉSULTATS ---
+        results_container = st.container()
 
-        col_btn, _ = st.columns([1, 3])
-
-        # Variable locale qui décidera si on lance l'IA dans ce run
-        question_a_executer: Optional[str] = None
-
-        # 1) Bouton principal : on utilise la question tapée dans la zone de texte
-        if col_btn.button("✨ Générer & Exécuter", type="primary", key="btn_ia_run"):
-            question_a_executer = question.strip()
-
+        # --- BAS : BOUTONS RAPIDES ---
         st.markdown("---")
-
-        # 2) Boutons de questions rapides : on exécute directement le texte du bouton
-        st.markdown("### Questions fréquentes :")
+        st.caption("Questions rapides :")
         cols = st.columns(len(QUESTION_BUTTONS))
         for i, question_text in enumerate(QUESTION_BUTTONS):
-            if cols[i].button(question_text, key=f"quick_q_{i}"):
-                question_a_executer = question_text
+            cols[i].button(question_text, key=f"quick_q_{i}", on_click=set_question, args=(question_text,))
 
-        # Si aucun bouton n'a été cliqué, on s'arrête là
-        if question_a_executer is None:
-            return
+        # --- LOGIQUE D'EXÉCUTION ---
+        question_actuelle = st.session_state["question_a_traiter"].strip()
 
-        question_a_executer = question_a_executer.strip()
-        if not question_a_executer:
-            st.warning("Veuillez écrire une question.")
-            st.session_state["ai_json_response"] = None
-            return
+        if question_actuelle:
+            with results_container:
+                st.info(f"Question : {question_actuelle}")
+                
+                # 1. Appel API
+                with st.spinner("Génération de la requête MongoDB..."):
+                    result_ia, error = interroger_groq(question_actuelle)
 
-        st.markdown(f"**Question envoyée à l'IA :** {question_a_executer}")
+                st.session_state["ai_json_response"] = result_ia
 
-        # Appel à Groq
-        with st.spinner("L'IA analyse votre demande..."):
-            result_ia, error = interroger_groq(question_a_executer)
+                # 2. Affichage du JSON (Replié mais visible)
+                if st.session_state.get("ai_json_response"):
+                    with st.expander("🛠️ Voir le JSON technique généré (Pipeline MongoDB)", expanded=False):
+                        st.code(json.dumps(st.session_state["ai_json_response"], indent=2, ensure_ascii=False), language="json")
 
-        st.session_state["ai_json_response"] = result_ia
-
-        if error:
-            st.error(f"Erreur API/LLM : {error}")
-            if "Clé API" in error:
-                st.info(
-                    "Allez sur https://console.groq.com pour avoir une clé gratuite !",
-                )
-            return
-
-        collection_cible = result_ia.get("collection")
-        pipeline: Optional[List] = result_ia.get("pipeline")
-
-        if not pipeline:
-            st.error(
-                "❌ Requête non comprise ou non pertinente pour la base de données. "
-                "Veuillez poser une question concernant les lignes, capteurs ou quartiers de Paris 2055.",
-            )
-            return
-
-        st.success("Requête générée avec succès !")
-
-        # Exécution MongoDB
-        with st.spinner(
-            f"Exécution sur la collection '{collection_cible}'...",
-        ):
-            try:
-                client = pymongo.MongoClient(MONGO_URI)
-                db = client[MONGO_DB_NAME]
-
-                if collection_cible not in db.list_collection_names():
-                    st.error(
-                        "Erreur : L'IA veut chercher dans "
-                        f"'{collection_cible}' mais cette collection "
-                        "n'existe pas.",
-                    )
-                    client.close()
+                # 3. Gestion des erreurs API
+                if error:
+                    st.error(f"Erreur IA : {error}")
                     return
 
-                collection = db[collection_cible]
-                results = list(collection.aggregate(pipeline))
-                client.close()
+                collection_cible = result_ia.get("collection")
+                pipeline = result_ia.get("pipeline")
 
-                if results:
-                    st.markdown(f"### 📊 Résultats ({len(results)})")
-                    df_res = pd.DataFrame(results)
-                    if "_id" in df_res.columns:
-                        df_res["_id"] = df_res["_id"].astype(str)
-                    st.dataframe(df_res, width='stretch')
-                else:
-                    st.warning(
-                        "La requête est valide syntaxiquement, "
-                        "mais aucun résultat n'a été trouvé.",
-                    )
-            except Exception as exc:
-                st.error(f"Erreur lors de l'exécution MongoDB : {exc}")
+                # --- VERIFICATION DE VALIDITÉ DU PIPELINE ---
+                if pipeline is None or not isinstance(pipeline, list):
+                     st.error("❌ L'IA a échoué à créer un format de pipeline valide.")
+                     return
 
+                # --- CORRECTION ICI : GESTION DU CAS HORS SUJET ---
+                # Si le pipeline est vide [], c'est le signal défini dans le prompt pour dire "Je ne sais pas"
+                if len(pipeline) == 0:
+                    st.warning("🤖 Résultat impossible ou question hors sujet par rapport à la base de données. Reformulez votre demande.")
+                    return
+                # --------------------------------------------------
+
+                # 4. Exécution Mongo (Seulement si le pipeline n'est pas vide)
+                with st.spinner(f"Exécution sur '{collection_cible}'..."):
+                    try:
+                        client = pymongo.MongoClient(MONGO_URI)
+                        db = client[MONGO_DB_NAME]
+                        
+                        if collection_cible not in db.list_collection_names():
+                            st.error(f"Erreur : Collection '{collection_cible}' introuvable.")
+                            client.close()
+                            return
+
+                        results = list(db[collection_cible].aggregate(pipeline))
+                        client.close()
+
+                        if results:
+                            st.markdown(f"### 📊 Résultats ({len(results)})")
+                            df_res = pd.DataFrame(results)
+                            if "_id" in df_res.columns: df_res["_id"] = df_res["_id"].astype(str)
+                            
+                            # Tableau avec width="stretch"
+                            st.dataframe(df_res, width="stretch")
+
+                            # Analyse textuelle
+                            st.markdown("### 💡 Analyse")
+                            with st.spinner("Analyse des résultats..."):
+                                analyse = analyser_resultats_avec_ia(question_actuelle, df_res, st.session_state["groq_api_key"])
+                            st.info(analyse, icon="📈")
+                        else:
+                            st.warning("La requête est valide, mais elle ne retourne aucun résultat (Tableau vide).")
+
+                    except Exception as exc:
+                        st.error(f"Erreur Mongo : {exc}")
+                        
 # =====================================================================
 # MAIN STREAMLIT
 # =====================================================================
