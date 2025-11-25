@@ -1,8 +1,0 @@
-pymongo
-customtkinter
-tk
-sq
-pandas
-streamlit
-dotenv
-groq
