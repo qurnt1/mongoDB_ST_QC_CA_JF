@@ -31,10 +31,3 @@ for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
   * **Pourquoi c'est nul :** `iterrows()` est extrêmement lent en Python/Pandas. Pour quelques milliers de lignes, ça passe. Pour des centaines de milliers, ton appli va figer.
   * **La solution :** Utilise `itertuples()` (beaucoup plus rapide) ou, mieux encore, utilise les méthodes vectorisées de Pandas (`to_dict('records')` après avoir fait tes jointures).
       * *Remplacement rapide :* Remplace `for index, row in df.iterrows():` par `for row in df.itertuples():`. Attention, pour accéder aux données, ce sera `row.ma_colonne` au lieu de `row["ma_colonne"]`.
-
-### 6\. ⚠️ Danger Zone (UX)
-
-Ton bouton "DROP DB, CSV & CLEAR CACHE" est super dangereux.
-
-  * **Pourquoi c'est nul :** Si un utilisateur clique par erreur, il perd tout sans confirmation (sauf si la base SQLite source est toujours là, mais il perd le temps de migration).
-  * **La solution :** Utilise un système de "double confirmation" (ex: une case à cocher "Je suis sûr" qui débloque le bouton, ou deux boutons successifs).
