@@ -17,7 +17,7 @@ import pymongo
 from pymongo.errors import PyMongoError
 import streamlit as st
 from groq import Groq
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv, set_key, find_dotenv
 
 # ======================================================================
 # Partie 1 - Constantes de chemins et paramètres généraux
@@ -39,17 +39,25 @@ DOSSIER_MONGO_CSV = os.path.join(
     "resultats_requetes_mongodb",
 )
 
-# Paramètres de connexion à MongoDB (cible de la migration)
-MONGO_URI = "mongodb://127.0.0.1:27017/"
-MONGO_DB_NAME = "Paris2055"
-
 # Chargement des variables d’environnement (dont la clé Groq)
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# ======================================================================
-# Partie 2 - Contexte de schéma pour l’IA (Génération de pipelines MongoDB)
-# ======================================================================
+# --- GESTION DYNAMIQUE DE L'URI ---
+def get_current_mongo_uri():
+    """
+    Récupère l'URI dans cet ordre de priorité :
+    1. Session Streamlit (modifié via l'interface)
+    2. Fichier .env
+    3. Valeur par défaut (localhost)
+    """
+    if "mongo_uri" in st.session_state:
+        return st.session_state["mongo_uri"]
+    return os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
+
+# C'est ici que la variable est définie dynamiquement
+MONGO_URI = get_current_mongo_uri()
+MONGO_DB_NAME = "Paris2055"
 
 # ======================================================================
 # Partie 2 - Contexte de schéma pour l’IA (Chargé depuis fichier externe)
@@ -2217,8 +2225,11 @@ os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
 def init_session_state() -> None:
     """
     Initialise les variables de session.
-    Vérifie la présence de CSV sur le disque pour recharger l'état automatiquement.
     """
+    # On initialise la clé mongo_uri SI elle n'existe pas encore
+    if "mongo_uri" not in st.session_state:
+        st.session_state["mongo_uri"] = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
+
     if st.session_state.get("initialized", False):
         return
 
@@ -2362,6 +2373,16 @@ def render_partie_2_migration(tab) -> None:
 
     with tab:
         st.subheader("Partie 2 : Migration vers MongoDB")
+        
+        # --- AJOUT : Vérification avant d'autoriser le clic ---
+        server_ok, _ = check_connexion_details() # On se fiche que la DB existe, on veut juste le serveur
+        
+        if not server_ok:
+            st.error("🚫 Impossible de migrer : Le serveur MongoDB est déconnecté. Vérifiez l'URI dans le menu de gauche.")
+            st.button("Lancer Migration", disabled=True, key="btn_mig_disabled")
+            return # On arrête l'affichage ici
+        # -----------------------------------------------------
+
         st.caption("Cliquez pour migrer les données de SQLite vers MongoDB.")
 
         def start_migration_callback() -> None:
@@ -2431,18 +2452,20 @@ def render_partie_3_mongo(tab) -> None:
 
         server_ok, db_ok = check_connexion_details()
 
+        # --- MODIFICATION : Gestion plus stricte ---
         if not server_ok:
-            st.error(f"❌ Impossible de se connecter au serveur MongoDB sur {MONGO_URI}")
-        elif not db_ok:
-            st.warning(f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore. Lancez la migration en Partie 2.")
-        else:
-            st.success(f"✅ Serveur connecté et base '{MONGO_DB_NAME}' détectée.")
-
-        st.markdown("---")
-        
+            st.error(f"❌ Serveur MongoDB introuvable. Vérifiez la configuration à droite.")
+            st.info("💡 Conseil : Lancez Docker ou vérifiez votre URI.")
+            return # On stop tout, pas de bouton possible
+            
+        if not db_ok:
+            st.warning(f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore.")
+            st.info("👉 Allez dans l'onglet **Partie 2 : Migration** pour créer la base.")
+            # On laisse le return ou on désactive le bouton ci-dessous
+                
+        # Le bouton devient :
         btn_disabled = not (server_ok and db_ok)
-
-        # Modification ici : Calcul + Sauvegarde
+        
         if st.button("Executer & Sauvegarder CSV Mongo", key="btn_mongo_run", disabled=btn_disabled):
             with st.spinner("Traitement en cours (Cache + Disque)..."):
                 # 1. Récupération rapide
@@ -2991,6 +3014,9 @@ def main() -> None:
     """
     Point d'entrée principal de l'application.
     """
+    # On déclare la globale pour pouvoir la modifier via l'input
+    global MONGO_URI
+
     st.set_page_config(
         page_title="Paris 2055 - Requêtes et Migration vers MongoDB",
         layout="wide",
@@ -3003,6 +3029,8 @@ def main() -> None:
 
     with st.sidebar:
         st.header("📡 État du Système")
+        
+        # --- BLOC ETAT (Ton design original) ---
         sqlite_exists = os.path.exists(DB_FILE)
         sqlite_icon = "✅" if sqlite_exists else "❌"
         sqlite_msg = "Ready" if sqlite_exists else "Missing"
@@ -3011,8 +3039,12 @@ def main() -> None:
         mongo_icon = "❌"
         mongo_color = "red"
 
+        # On s'assure que l'URI est dans le session_state pour le check
+        current_uri = st.session_state.get("mongo_uri", MONGO_URI)
+
         try:
-            client_check = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=500)
+            # On utilise current_uri pour le test de connexion
+            client_check = pymongo.MongoClient(current_uri, serverSelectionTimeoutMS=500)
             client_check.admin.command("ping")
             if MONGO_DB_NAME in client_check.list_database_names():
                 db_check = client_check[MONGO_DB_NAME]
@@ -3042,6 +3074,8 @@ def main() -> None:
             st.markdown(f":{mongo_color}[**{mongo_icon} {mongo_status}**]")
 
         st.markdown("---")
+        
+        # --- BLOC CACHE (Ton design original) ---
         st.header("🗂️ État des Caches")
         if st.session_state.get("queries_sql_executed", False):
             st.success("Cache SQL : **Chargé**", icon="✅")
@@ -3054,19 +3088,47 @@ def main() -> None:
             st.info("Cache Mongo : **Vide**", icon="⚪")
 
         st.markdown("---")
-        st.header("🔑 Config API")
+        
+        # --- BLOC CONFIGURATION (AJOUT DE L'URI ICI) ---
+        st.header("🔑 Config API & DB")
+        
+        # 1. Groq API Key
         new_key = st.text_input("Groq API Key", value=st.session_state["groq_api_key"], type="password")
         if new_key != st.session_state["groq_api_key"]:
             st.session_state["groq_api_key"] = new_key
             os.environ["GROQ_API_KEY"] = new_key
             try:
-                set_key(".env", "GROQ_API_KEY", new_key)
-                st.success("Sauvegardé ! ✅")
+                env_path = find_dotenv() or ".env"
+                set_key(env_path, "GROQ_API_KEY", new_key)
+                st.success("API Key sauvegardée ! ✅")
             except: pass
             time.sleep(0.5)
             st.rerun()
 
+        # 2. MongoDB URI (L'ajout que tu voulais)
+        if "mongo_uri" not in st.session_state:
+             st.session_state["mongo_uri"] = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
+
+        new_mongo = st.text_input("MongoDB URI", value=st.session_state["mongo_uri"], placeholder="mongodb://...")
+        
+        if new_mongo != st.session_state["mongo_uri"]:
+            st.session_state["mongo_uri"] = new_mongo
+            os.environ["MONGO_URI"] = new_mongo 
+            MONGO_URI = new_mongo # Mise à jour de la globale
+            
+            try:
+                env_path = find_dotenv() or ".env"
+                set_key(env_path, "MONGO_URI", new_mongo)
+                st.success("URI Mongo sauvegardée ! ✅")
+            except Exception as e: 
+                st.warning(f"Erreur .env: {e}")
+            
+            time.sleep(0.5)
+            st.rerun()
+
         st.markdown("---")
+        
+        # --- BLOC DANGER ZONE (Ton design original) ---
         st.subheader("🧨 Danger Zone")
 
         # Bouton Optimisé : Supprime la DB, les CSV ET vide le cache RAM
@@ -3120,6 +3182,6 @@ def main() -> None:
     render_partie_4_streamlit(tab4)
     render_partie_5_comparaison(tab5)
     render_partie_6_ia(tab6)
-
+    
 if __name__ == "__main__":
     main()

@@ -32,13 +32,6 @@ for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
   * **La solution :** Utilise `itertuples()` (beaucoup plus rapide) ou, mieux encore, utilise les méthodes vectorisées de Pandas (`to_dict('records')` après avoir fait tes jointures).
       * *Remplacement rapide :* Remplace `for index, row in df.iterrows():` par `for row in df.itertuples():`. Attention, pour accéder aux données, ce sera `row.ma_colonne` au lieu de `row["ma_colonne"]`.
 
-### 5\. 🤖 Le prompt de l'IA est "Hardcodé"
-
-La variable `SCHEMA_CONTEXT` est une énorme chaîne de caractères au début du fichier.
-
-  * **Pourquoi c'est nul :** Ça pollue la lecture du code.
-  * **La solution :** Mets ce texte dans un fichier séparé (ex: `context_prompt.txt`) et lis ce fichier au démarrage du script.
-
 ### 6\. ⚠️ Danger Zone (UX)
 
 Ton bouton "DROP DB, CSV & CLEAR CACHE" est super dangereux.
