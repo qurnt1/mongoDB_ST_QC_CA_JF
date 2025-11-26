@@ -1,5 +1,5 @@
 # ================ Lancez l'application avec : =========================
-# streamlit run app.py
+# python -m streamlit run app.py
 # ======================================================================
 
 # ======================================================================
@@ -19,7 +19,6 @@ import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv, set_key
 import re
-
 
 # ======================================================================
 # Partie 1 - Constantes de chemins et paramètres généraux
@@ -468,7 +467,7 @@ def insert_with_progress(
             total,
             "Insertion MongoDB",
             log_fn,
-            step_percent=10,
+            step_percent=1,
         )
 
     log_fn(
@@ -856,7 +855,7 @@ def build_quartiers_docs(
                 nb_groups,
                 "Groupement Arrêts/Quartiers",
                 log_fn,
-                step_percent=10,
+                step_percent=1,
             )
 
         log_fn("", replace_last=False)
@@ -991,7 +990,7 @@ def build_capteurs_docs(
                 nb_groups,
                 "Groupement Mesures/Capteurs",
                 log_fn,
-                step_percent=10,
+                step_percent=1,
             )
 
         log_fn("", replace_last=False)
@@ -2425,10 +2424,10 @@ def streamlit_migration_log(message: str, replace_last: bool = False) -> None:
         text_content = "\n".join(display_lines)
         MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
 
+# =====================================================================
+# RESTITUER PARTIE 1 : INTERFACE REQUÊTES SQLITE
+# =====================================================================
 
-# =====================================================================
-# PARTIE 1 : INTERFACE REQUÊTES SQLITE
-# =====================================================================
 def render_partie_1_sqlite(tab) -> None:
     with tab:
         st.subheader("Partie 1 : Requêtes SQLite")
@@ -2472,7 +2471,7 @@ def render_partie_1_sqlite(tab) -> None:
                     )
 
 # =====================================================================
-# PARTIE 2 : INTERFACE MIGRATION SQLITE → MONGODB
+# RESTITUER PARTIE 2 : INTERFACE MIGRATION SQLITE → MONGODB
 # =====================================================================
 
 def render_partie_2_migration(tab) -> None:
@@ -2547,10 +2546,10 @@ def render_partie_2_migration(tab) -> None:
                 key="final_log_view",
             )
 
+# =====================================================================
+# RESTITUER PARTIE 3 : INTERFACE REQUÊTES MONGODB
+# =====================================================================
 
-# =====================================================================
-# PARTIE 3 : INTERFACE REQUÊTES MONGODB
-# =====================================================================
 def render_partie_3_mongo(tab) -> None:
     with tab:
         st.subheader("Partie 3 : Requêtes MongoDB")
@@ -2600,8 +2599,9 @@ def render_partie_3_mongo(tab) -> None:
                         df.style.set_properties(**{"text-align": "left"}), 
                         width="stretch"  # Remplace use_container_width=True
                     )
+
 # =====================================================================
-# PARTIE 4 : TABLEAU DE BORD / CARTOGRAPHIE (PLACEHOLDER)
+# RESTITUER PARTIE 4 : TABLEAU DE BORD / CARTOGRAPHIE (PLACEHOLDER)
 # =====================================================================
 
 def render_partie_4_streamlit(tab) -> None:
@@ -2620,9 +2620,8 @@ def render_partie_4_streamlit(tab) -> None:
             "(cartes, dashboards, etc.).",
         )
 
-
 # =====================================================================
-# PARTIE 5 : COMPARAISON SQL vs MONGODB
+# RESTITUER PARTIE 5 : COMPARAISON SQL vs MONGODB
 # =====================================================================
 
 def comparer_dataframes_souple(
@@ -2796,9 +2795,8 @@ def render_partie_5_comparaison(tab) -> None:
                 f"({total_ok}/{total_queries}). Vérifiez vos pipelines.",
             )
 
-
 # =====================================================================
-# PARTIE 6 : ASSISTANT IA (GROQ / LLAMA3)
+# RESTITUER PARTIE 6 : ASSISTANT IA (GROQ / LLAMA3)
 # =====================================================================
 
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
@@ -3110,10 +3108,10 @@ def render_partie_6_ia(tab) -> None:
                     except Exception as exc:
                         st.error(f"Erreur Mongo : {exc}")
 
+# =====================================================================
+# RESTITUER POINT D'ENTRÉE STREAMLIT
+# =====================================================================
 
-# =====================================================================
-# POINT D'ENTRÉE STREAMLIT
-# =====================================================================
 def main() -> None:
     """
     Point d'entrée principal de l'application.
@@ -3233,8 +3231,12 @@ def main() -> None:
                 st.error(f"Erreur : {exc}")
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Partie 1 : Requêtes SQL", "Partie 2 : Migration", "Partie 3 : Requêtes MongoDB",
-        "Partie 4 : Dashboard", "Partie 5 : Comparaison", "Partie 6 : Assistant IA"
+        "Partie 1 : Requêtes SQL", 
+        "Partie 2 : Migration", 
+        "Partie 3 : Requêtes MongoDB",
+        "Partie 4 : Dashboard", 
+        "Partie 5 : Comparaison", 
+        "Partie 6 : Assistant IA"
     ])
 
     render_partie_1_sqlite(tab1)
