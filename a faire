@@ -9,17 +9,6 @@ Actuellement, ta fonction `load_tables` charge **toute la base SQLite en RAM** d
   * **Pourquoi c'est nul :** Si ta base de données grandit (ex: 1 million de mesures ou de lignes de trafic), ton application va planter (Erreur *Out of Memory*).
   * **La solution :** Pour un ETL pro, on ne charge pas tout. On fait du **streaming** (lire par paquets/chunks) ou on ne charge que les colonnes nécessaires (`SELECT id, nom FROM ...` au lieu de `*`).
 
-### 2\. 🔐 Sécurité & Configuration (Hardcoding)
-
-Tu as mis l'URI MongoDB en dur dans le code :
-
-```python
-MONGO_URI = "mongodb://127.0.0.1:27017/"
-```
-
-  * **Pourquoi c'est nul :** Si tu déploies ça sur un serveur ou que tu changes de base de données, tu dois modifier le code source. De plus, si tu avais un mot de passe, il serait visible sur GitHub.
-  * **La solution :** Mets l'URI dans ton fichier `.env` (comme tu l'as fait pour la clé GROQ) et récupère-la avec `os.getenv("MONGO_URI")`.
-
 ### 3\. 🐢 Lenteur des boucles `iterrows()`
 
 Dans tes fonctions `build_...` (ex: `build_lignes_docs`), tu utilises beaucoup `iterrows()` :
