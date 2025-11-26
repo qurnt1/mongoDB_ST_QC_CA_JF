@@ -18,7 +18,6 @@ from pymongo.errors import PyMongoError
 import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv, set_key
-import re
 
 # ======================================================================
 # Partie 1 - Constantes de chemins et paramètres généraux
@@ -53,81 +52,333 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ======================================================================
 
 SCHEMA_CONTEXT = """
-Tu es un expert MongoDB et Python. Ton but est de traduire une question naturelle en pipeline d'agrégation MongoDB.
+Tu es un expert MongoDB et Python. Ton but est de traduire une question en langage naturel
+en un pipeline d'agrégation MongoDB efficace et compatible avec le modèle de données
+documentaire actuel de la base 'Paris2055'.
 
-Voici le schéma EXACT de la base de données 'Paris2055' (Optimisée Document) :
+UTILISATION :
+Tu dois toujours renvoyer UNIQUEMENT un objet JSON valide de la forme :
 
-1. Collection 'lignes' :
-   - C'est la collection principale pour le trafic, les véhicules et le personnel.
-   - Structure :
-     {
-       "id_ligne": int,
-       "nom_ligne": str,
-       "type": str (ex: "Bus", "Tramway", "Metro"),
-       "frequentation_moyenne": float,
-       "co2_moyen_ligne": float (Pré-calculé),
-       
-       # CHAMPS OPTIMISÉS (CACHES) - À utiliser en priorité :
-       "stats_trafic": { "total_retard": float, "nb_trajets": int, "moyenne_precalc": float },
-       "vehicules_cache": [ { "id_vehicule": int, "immatriculation": str, "type_vehicule": str (ex: "Electrique", "Diesel") } ],
-       "chauffeurs_cache": [ { "id_chauffeur": int, "nom_chauffeur": str } ],
+{
+  "collection": "nom_de_la_collection_cible",
+  "pipeline": [ ... étapes d'agrégation ... ]
+}
 
-       # CHAMPS DÉTAILLÉS (Lourds) :
-       "arrets": [ { "id_arret": int, "nom": str, "quartiers": [...] } ],
-       "trafic": [ { "id_trafic": int, "retard_minutes": int, "incidents": [...] } ]
-     }
+Aucune phrase en dehors de ce JSON.
 
-2. Collection 'capteurs' :
-   - Pour les mesures environnementales (Bruit, CO2, Temperature).
-   - Structure :
-     {
-       "id_capteur": int,
-       "type_capteur": str,
-       "position": { "type": "Point", "coordinates": [long, lat] },
-       "arret": { "id_arret": int, "nom": str, "nom_ligne": str }, # Info dénormalisée
-       "mesures": [ { "valeur": float, "horodatage": date, "unite": str } ]
-     }
+------------------------------------------------------------
+1. SCHÉMA EXACT DES COLLECTIONS (MODÈLE DOCUMENT ACTUEL)
+------------------------------------------------------------
 
-3. Collection 'quartiers' :
-   - Pour les analyses géographiques.
-   - Structure :
-     {
-       "id_quartier": int,
-       "nom": str,
-       "geom": { "type": "Polygon", ... },
-       "arrets": [ { "id_arret": int, "nom": str, "nom_ligne": str } ] # Liste des arrêts dans ce quartier
-     }
+La base 'Paris2055' contient principalement 3 collections :
 
-RÈGLES DE GÉNÉRATION DU PIPELINE :
+============================================================
+1) Collection 'lignes'
+============================================================
 
-1. FORMAT DE SORTIE :
-   Tu dois répondre UNIQUEMENT un objet JSON valide :
+Une ligne de transport = 1 document.
+
+Champs de base :
+- id_ligne           : int
+- nom_ligne          : string  (ex : "B2", "M14")
+- type               : string  (ex : "Bus", "Tramway", "Metro")
+- frequentation_moyenne : float | null
+  (fréquentation moyenne globale de la ligne)
+
+Caches / champs dérivés (à utiliser en priorité) :
+- stats_trafic : {
+    "total_retard"     : float,  # somme des retards (minutes) sur tous les trajets de la ligne
+    "nb_trajets"       : int,    # nombre total de trajets enregistrés
+    "moyenne_precalc"  : float   # moyenne des retards (minutes) = total_retard / nb_trajets
+  }
+
+- vehicules_cache : [
+    {
+      "id_vehicule"       : int,
+      "immatriculation"   : string,
+      "type_vehicule"     : string | null,          # ex : "Electrique", "Diesel"
+      "id_ligne_officielle": int | null             # id_ligne de référence du véhicule
+    },
+    ...
+  ]
+
+- chauffeurs_cache : [
+    {
+      "id_chauffeur"  : int,
+      "nom_chauffeur" : string
+    },
+    ...
+  ]
+
+- co2_moyen_ligne : float | null
+  (moyenne des mesures CO2 associées à cette ligne ; pré-calculé pour éviter
+   des jointures lourdes sur les capteurs)
+
+Détails embarqués (sections potentiellement volumineuses) :
+
+- arrets : [
+    {
+      "id_arret"    : int,
+      "nom"         : string,
+      "latitude"    : float | null,
+      "longitude"   : float | null,
+
+      # Quartiers auxquels cet arrêt appartient
+      "quartiers" : [
+        { "id_quartier": int, "nom": string },
+        ...
+      ] | absent
+
+      # Liste des capteurs rattachés à l'arrêt (référence par id_capteur)
+      "capteurs_ids" : [ int, ... ] | absent
+
+      # Horaires de passage enrichis
+      "horaires" : [
+        {
+          "heure_prevue"      : date,   # Date MongoDB (BSON Date)
+          "passagers_estimes" : int | null,
+
+          "vehicule" : {
+            "id_vehicule"        : int,
+            "type_vehicule"      : string | null,
+            "immatriculation"    : string | null,
+            "id_ligne_officielle": int | null
+          } | absent
+        },
+        ...
+      ] | absent
+    },
+    ...
+  ]
+
+- trafic : [
+    {
+      "id_trafic"       : int,
+      "retard_minutes"  : int | null,
+      "incidents" : [
+        {
+          "id_incident" : int,
+          "description" : string | null,
+          "gravite"     : string | int | null
+        },
+        ...
+      ] | absent
+    },
+    ...
+  ]
+
+============================================================
+2) Collection 'capteurs'
+============================================================
+
+Un capteur physique = 1 document.
+
+Champs principaux :
+- id_capteur   : int
+- type_capteur : string   # ex : "CO2", "Bruit", "Temperature"
+
+Localisation :
+- position : {
+    "type"        : "Point",
+    "coordinates" : [ longitude: float, latitude: float ]
+  } | absent
+
+Rattachement à un arrêt / une ligne (dénormalisé) :
+- arret : {
+    "id_arret"   : int,
+    "nom"        : string | null,
+    "id_ligne"   : int | null,
+    "nom_ligne"  : string | null
+  } | absent
+
+Mesures :
+- mesures : [
+    {
+      "id_mesure"   : int | null,
+      "horodatage"  : date | null,   # Date MongoDB
+      "valeur"      : float | null,
+      "unite"       : string | null  # ex : "ppm", "dB", "°C"
+    },
+    ...
+  ]
+
+============================================================
+3) Collection 'quartiers'
+============================================================
+
+Un quartier géographique = 1 document.
+
+Champs principaux :
+- id_quartier : int
+- nom         : string
+
+Géométrie (facultatif) :
+- geom : {
+    "type"        : "Polygon" | "MultiPolygon" | autre type GeoJSON,
+    "coordinates" : [...]
+  } | absent
+
+Arrêts présents dans le quartier :
+- arrets : [
+    {
+      "id_arret"  : int,
+      "nom"       : string,
+      "id_ligne"  : int | null,
+      "nom_ligne" : string | null
+    },
+    ...
+  ] | absent
+
+============================================================
+4) INDEX EXISTANTS (pour t'orienter)
+============================================================
+
+- db.lignes   : index sur "id_ligne", "nom_ligne", "type"
+- db.capteurs : index sur "id_capteur", "type_capteur",
+                "arret.id_ligne", "arret.id_arret",
+                "position" (2dsphere)
+- db.quartiers: index sur "geom" (2dsphere)
+
+------------------------------------------------------------
+2. RÈGLES POUR CHOISIR LA COLLECTION CIBLE
+------------------------------------------------------------
+
+- Si la question porte sur :
+  * les lignes, les retards, la ponctualité, la fréquentation,
+  * les véhicules, les chauffeurs,
+  => utilise "collection": "lignes"
+
+- Si la question porte sur :
+  * les capteurs, le CO2, le bruit, la température, la pollution,
+  => utilise "collection": "capteurs"
+
+- Si la question porte sur :
+  * les quartiers, la géographie, le nombre d'arrêts par quartier,
+  * les quartiers les plus bruyants / pollués,
+  => utilise "collection": "quartiers"
+     (avec éventuellement un $lookup vers 'capteurs' si nécessaire)
+
+------------------------------------------------------------
+3. RÈGLES D'OPTIMISATION (TRÈS IMPORTANTES)
+------------------------------------------------------------
+
+1) Véhicules :
+   - Il n'existe PAS de collection 'vehicules'.
+   - Pour compter / filtrer des véhicules par type, utiliser :
+       - 'lignes.vehicules_cache'
+       - ou 'lignes.arrets.horaires.vehicule'
+   - Pour les pourcentages de véhicules électriques par ligne :
+       - collection = 'lignes'
+       - filtrer sur type = "Bus"
+       - $unwind "vehicules_cache"
+       - calculer nb_electriques / total_vehicules.
+
+2) Chauffeurs :
+   - Il n'existe PAS de collection 'chauffeurs'.
+   - Utiliser exclusivement 'lignes.chauffeurs_cache'.
+   - Pour la moyenne de retard par chauffeur :
+       - s'appuyer sur 'stats_trafic' (total_retard, nb_trajets) au niveau ligne,
+       - $unwind "chauffeurs_cache",
+       - regrouper par 'chauffeurs_cache.nom_chauffeur'.
+
+3) Retards / ponctualité :
+   - Si la question porte sur une moyenne ou un taux global de retard :
+       - privilégier 'stats_trafic' :
+           * moyenne_retard_ligne = stats_trafic.moyenne_precalc
+           * total_retard_global  = somme de stats_trafic.total_retard
+           * nb_trajets_global    = somme de stats_trafic.nb_trajets
+       - n'utiliser 'trafic' (liste détaillée) que si :
+           * la question demande un détail par trajet,
+           * ou si on a besoin de filtrer sur les incidents de certains trajets.
+
+4) CO2 :
+   - Moyenne de CO2 par ligne :
+       - utiliser 'co2_moyen_ligne' dans 'lignes' (pré-calculé).
+   - Moyenne de CO2 par capteur :
+       - collection = 'capteurs'
+       - filtrer type_capteur = "CO2"
+       - $unwind 'mesures' puis $avg sur 'mesures.valeur'.
+   - Éviter les jointures lourdes ligne → arrêts → capteurs → mesures
+     si une information pré-calculée existe déjà.
+
+5) Passagers / fréquentation :
+   - Fréquentation globale :
+       - utiliser 'frequentation_moyenne' de 'lignes'.
+   - Moyenne de passagers par jour et par ligne :
+       - collection = 'lignes'
+       - $unwind "arrets"
+       - $unwind "arrets.horaires"
+       - extraire le jour depuis "arrets.horaires.heure_prevue" (type Date) avec :
+           * soit $dateToString { format: "%Y-%m-%d", date: "$arrets.horaires.heure_prevue" }
+           * soit $dateTrunc (si nécessaire)
+       - sommer "passagers_estimes" par (id_ligne, jour), puis faire une moyenne
+         sur les jours par id_ligne.
+
+6) Incidents :
+   - Les incidents sont stockés dans 'lignes.trafic.incidents'.
+   - Pour tester "trajets avec incident" vs "sans incident" :
+       - utiliser $size sur "$ifNull" des tableaux 'incidents'.
+       - exemple de condition :
+           has_incident = $gt : [ { $size: { $ifNull: ["$trafic.incidents", []] } }, 0 ]
+
+7) Quartiers + bruit / pollution :
+   - Pour les quartiers les plus bruyants :
+       - point de départ naturel : collection = "quartiers"
+       - $lookup sur 'capteurs' via "arrets.id_arret" = "capteurs.arret.id_arret"
+       - filtrer type_capteur = "Bruit"
+       - $unwind "mesures", puis moyenne des 'mesures.valeur' par quartier.
+   - Pour le nombre d'arrêts par quartier :
+       - utiliser directement 'quartiers.arrets' et $size.
+
+------------------------------------------------------------
+4. RÈGLE DE PROJECTION FINALE (OBLIGATOIRE)
+------------------------------------------------------------
+
+- Le pipeline DOIT toujours se terminer par une étape "$project".
+- Cette projection doit :
+  * supprimer le champ '_id' (mettre "_id": 0),
+  * NE renvoyer QUE les champs utiles pour répondre à la question,
+  * NE PAS renvoyer les grandes listes complètes suivantes, sauf demande explicite :
+    - "trafic"
+    - "arrets"
+    - "arrets.horaires"
+    - "mesures"
+
+Exemples :
+- Pour une moyenne par ligne, renvoyer uniquement :
+    "nom_ligne", "valeur_calculee" (ou nom explicite)
+- Pour un classement des capteurs CO2 :
+    "id_capteur", "moyenne_co2", "niveau_pollution", éventuellement la position.
+
+------------------------------------------------------------
+5. FORMAT DE SORTIE ET CAS HORS SUJET
+------------------------------------------------------------
+
+1) FORMAT STRICT :
+   Tu dois TOUJOURS renvoyer un objet JSON unique, par exemple :
+
    {
-     "collection": "nom_de_la_collection_cible",
-     "pipeline": [ ... liste des étapes d'agrégation ... ]
+     "collection": "lignes",
+     "pipeline": [
+       { "$match": { ... } },
+       { "$group": { ... } },
+       { "$project": { "_id": 0, "nom_ligne": 1, "moyenne_retard": 1 } }
+     ]
    }
 
-2. RÈGLES MÉTIER & OPTIMISATION :
-   - Si la question porte sur les VÉHICULES (ex: "combien de bus électriques"), utilise `vehicules_cache` dans la collection `lignes`. N'invente pas de collection "vehicules".
-   - Si la question porte sur les CHAUFFEURS, utilise `chauffeurs_cache` dans `lignes`.
-   - Si la question porte sur le RETARD GLOBAL d'une ligne, privilégie `stats_trafic` si disponible, sinon déroule `trafic`.
-   - Pour filtrer une liste (ex: garder les véhicules électriques), utilise `$unwind` sur le cache correspondant puis `$match`.
+   - Aucune explication textuelle en dehors de ce JSON.
+   - Pas de commentaires, pas de texte libre.
 
-3. RÈGLE DE PROJECTION (OBLIGATOIRE) :
-   - Termine TOUJOURS par un `"$project"`.
-   - Supprime `_id` (`"_id": 0`).
-   - Ne renvoie QUE les champs utiles à la réponse (ex: `nom_ligne`, `valeur_calculee`).
-   - NE RENVOIE JAMAIS les listes complètes (`trafic`, `mesures`, `arrets`) sauf demande explicite.
+2) CAS HORS SUJET :
+   - Si la question ne concerne pas les données de 'Paris2055'
+     (ex : recette de cuisine, météo réelle, etc.),
+     renvoie :
 
-4. EXEMPLES :
-   - "Moyenne retard par chauffeur ?" -> Collection: `lignes` -> $unwind `chauffeurs_cache` -> $project nom & stats_trafic.moyenne_precalc.
-   - "Quartiers les plus bruyants ?" -> Collection: `quartiers` -> $lookup sur capteurs (via arrets) -> moyenne.
-
-5. CAS D'ERREUR :
-   Si la question est hors sujet (ex: "Recette de cuisine"), renvoie :
-   { "collection": "lignes", "pipeline": [] }
+     {
+       "collection": "lignes",
+       "pipeline": []
+     }
 """
-
 
 # ======================================================================
 # Partie 3 - Utilitaires génériques (indépendants de SQLite / Mongo / UI)
@@ -268,36 +519,6 @@ def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
         return "ppm"
     return None
 
-
-def to_datetime(value) -> Optional[object]:
-    """
-    Convertit une valeur vers un objet datetime Python si possible.
-
-    La conversion s'appuie sur `pandas.to_datetime` en mode tolérant
-    (erreurs silencieuses). Les valeurs non convertibles sont renvoyées
-    sous forme de None.
-
-    Paramètres
-    ----------
-    value :
-        Valeur initiale (chaîne, timestamp, etc.) ou NaN.
-
-    Retour
-    ------
-    datetime | None
-        Objet datetime Python si la conversion réussit, None sinon.
-    """
-    if pd.isna(value):
-        return None
-
-    try:
-        dt = pd.to_datetime(value, errors="coerce")
-        if pd.isna(dt):
-            return None
-        return dt.to_pydatetime()
-    except Exception:
-        return None
-
 # =====================================================================
 # UTILITAIRES MONGO / ETL (COUCHE DATA, HORS UI)
 # =====================================================================
@@ -324,51 +545,6 @@ def aggregate_to_df(collection, pipeline: List[Dict]) -> pd.DataFrame:
     if not documents:
         return pd.DataFrame()
     return pd.DataFrame(documents)
-
-
-def dataframe_to_dict_progressive(
-    df: pd.DataFrame,
-    label: str,
-    log_fn: Callable[[str, bool], None],
-    batch_size: int = 1000,
-) -> List[Dict]:
-    """
-    Convertit un DataFrame en liste de dictionnaires avec suivi de
-    progression par paquets.
-
-    Utile pour préparer des documents à insérer en base ou à sérialiser,
-    tout en limitant la consommation mémoire et le nombre de messages de log.
-
-    Paramètres
-    ----------
-    df : pandas.DataFrame
-        Données tabulaires à convertir.
-    label : str
-        Libellé utilisé dans les messages de progression.
-    log_fn : Callable[[str, bool], None]
-        Fonction de log prenant un message et un indicateur de remplacement.
-    batch_size : int
-        Nombre de lignes converties à chaque itération.
-
-    Retour
-    ------
-    list[dict]
-        Liste de dictionnaires (un par ligne du DataFrame).
-    """
-    total = len(df)
-    documents: List[Dict] = []
-
-    log_progress(0, total, label, log_fn)
-
-    # Parcours par tranches pour éviter de charger l'ensemble d'un coup
-    for start in range(0, total, batch_size):
-        end = min(start + batch_size, total)
-        batch = df.iloc[start:end].to_dict("records")
-        documents.extend(batch)
-        log_progress(len(documents), total, label, log_fn)
-
-    return documents
-
 
 def sauvegarder_collection_json(
     nom_collection: str,
@@ -673,6 +849,7 @@ def build_lignes_docs(
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
         # On rattache les véhicules aux horaires pour enrichir le sous-document
+
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
         df_h_full = df_h.merge(
             df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule")

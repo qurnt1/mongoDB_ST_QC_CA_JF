@@ -1,7 +1,0 @@
-renommer les parties
-faire en sorte que les noms soient complets dans la partie 5
-
-faire verifier la partie ia par ia, verif si on a bien les mm resultats que les requetes sql 
-ajouter geoloc dans le pormpt ia
-
-pk etat du systeme le ready sql lite est pas vert
