@@ -1,6 +1,11 @@
-################ Lancer l'application avec : ###########################
-# streamlit run app.py
-########################################################################
+# ================ Lancez l'application avec : =========================
+# streamlit run app.py a
+# ======================================================================
+
+# ======================================================================
+# Partie 0 - Imports et configuration globale
+# ======================================================================
+
 import os
 import sqlite3
 import time
@@ -16,9 +21,18 @@ from dotenv import load_dotenv, set_key
 import re
 
 
+# ======================================================================
+# Partie 1 - Constantes de chemins et paramètres généraux
+# ======================================================================
+
+# Répertoires de travail locaux (fichiers SQLite, exports CSV, JSON, etc.)
 DOSSIER_DATA = "data"
 DOSSIER_SQLITE = "sqlite"
+
+# Fichier principal de la base relationnelle source
 DB_FILE = os.path.join(DOSSIER_DATA, DOSSIER_SQLITE, "db", "paris2055.sqlite")
+
+# Dossiers d’export CSV (résultats des requêtes SQL et MongoDB)
 DOSSIER_CSV = "./data/sqlite/resultats_requetes_sqlite/"
 DOSSIER_JSON = os.path.join(DOSSIER_DATA, "mongodb", "collections")
 DOSSIER_MONGO_CSV = os.path.join(
@@ -27,12 +41,17 @@ DOSSIER_MONGO_CSV = os.path.join(
     "resultats_requetes_mongodb",
 )
 
+# Paramètres de connexion à MongoDB (cible de la migration)
 MONGO_URI = "mongodb://127.0.0.1:27017/"
 MONGO_DB_NAME = "Paris2055"
 
+# Chargement des variables d’environnement (dont la clé Groq)
 load_dotenv()
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+# ======================================================================
+# Partie 2 - Contexte de schéma pour l’IA (Génération de pipelines MongoDB)
+# ======================================================================
 
 SCHEMA_CONTEXT = """
 Tu es un expert MongoDB et Python. Ton but est de traduire une question naturelle en pipeline d'agrégation MongoDB.
@@ -110,87 +129,65 @@ RÈGLES DE GÉNÉRATION DU PIPELINE :
    { "collection": "lignes", "pipeline": [] }
 """
 
-# =====================================================================
-# UTILITAIRES GENERAUX
-# =====================================================================
 
-def enregistrer_resultats_csv(
-    lien_dossier: str,
-    nom_fichier: str,
-    dataframe: pd.DataFrame,
+# ======================================================================
+# Partie 3 - Utilitaires génériques (indépendants de SQLite / Mongo / UI)
+# ======================================================================
+
+def log_progress(
+    current: int,
+    total: int,
+    prefix: str,
+    log_fn: Callable[[str, bool], None],
+    step_percent: Optional[int] = None,
 ) -> None:
     """
-    Enregistre un DataFrame au format CSV dans le dossier indiqué.
+    Affiche une progression textuelle d'un traitement long.
+
+    La fonction calcule le pourcentage d'avancement et délègue l'affichage
+    à une fonction de log externe (console, Streamlit, etc.). Elle peut
+    limiter la fréquence d'affichage pour éviter de saturer les sorties.
 
     Paramètres
     ----------
-    lien_dossier : str
-        Chemin du dossier de sortie.
-    nom_fichier : str
-        Nom du fichier CSV à créer.
-    dataframe : pandas.DataFrame
-        Données à exporter.
+    current : int
+        Nombre d'éléments déjà traités.
+    total : int
+        Nombre total d'éléments à traiter.
+    prefix : str
+        Libellé fonctionnel du traitement (ex. 'Migration lignes').
+    log_fn : Callable[[str, bool], None]
+        Fonction de log recevant le message et un booléen indiquant
+        si la dernière ligne doit être remplacée.
+    step_percent : int | None
+        Pas d'affichage en pourcentage (ex. 10 pour afficher tous les 10 %).
+        Si None, chaque appel est potentiellement loggé.
 
-    Retour
-    ------
-    None
-        Le fichier est écrit sur le disque, une exception est levée en cas d'erreur.
+    Remarque
+    --------
+    Si `total` vaut 0, la fonction ne produit aucun log (division évitée).
     """
-    os.makedirs(lien_dossier, exist_ok=True)
-    full_path = os.path.join(lien_dossier, nom_fichier)
-    dataframe.to_csv(full_path, index=False, encoding="utf-8-sig")
+    if total == 0:
+        return
 
+    if step_percent:
+        step = max(int(total * (step_percent / 100)), 1)
+        # Ne pas logguer chaque élément pour éviter un flot de messages.
+        if current % step != 0 and current != total:
+            return
 
-def aggregate_to_df(collection, pipeline: List[Dict]) -> pd.DataFrame:
-    """
-    Exécute un pipeline d'agrégation MongoDB et retourne le résultat en DataFrame.
-
-    Paramètres
-    ----------
-    collection :
-        Collection MongoDB sur laquelle exécuter l'agrégation.
-    pipeline : list[dict]
-        Pipeline d'agrégation MongoDB.
-
-    Retour
-    ------
-    pandas.DataFrame
-        Résultat de l'agrégation, vide si aucun document n'est retourné.
-    """
-    documents = list(collection.aggregate(pipeline))
-    if not documents:
-        return pd.DataFrame()
-    return pd.DataFrame(documents)
-
-
-def to_datetime(value) -> Optional[object]:
-    """
-    Convertit une valeur vers un objet datetime Python si possible.
-
-    Paramètres
-    ----------
-    value :
-        Valeur initiale (texte ou datetime-like).
-
-    Retour
-    ------
-    datetime | None
-        Objet datetime si la conversion réussit, None sinon.
-    """
-    if pd.isna(value):
-        return None
-    try:
-        dt = pd.to_datetime(value, errors="coerce")
-        if pd.isna(dt):
-            return None
-        return dt.to_pydatetime()
-    except Exception:
-        return None
+    pct = (current / total) * 100
+    message = f"    >> {prefix} : {current:,} / {total:,} ({pct:.1f}%)"
+    log_fn(message, replace_last=True)
 
 
 def parse_geojson_geometry(geojson_str: Optional[str]) -> Optional[Dict]:
     """
-    Extrait la géométrie (type / coordinates) d'une chaîne représentant un objet GeoJSON.
+    Extrait la géométrie (type + coordonnées) à partir d'une chaîne GeoJSON.
+
+    La fonction accepte aussi bien :
+    - un objet GeoJSON de type Geometry (Polygon, Point, etc.) ;
+    - un objet GeoJSON de type Feature contenant un champ 'geometry'.
 
     Paramètres
     ----------
@@ -200,7 +197,12 @@ def parse_geojson_geometry(geojson_str: Optional[str]) -> Optional[Dict]:
     Retour
     ------
     dict | None
-        Dictionnaire avec les clés 'type' et 'coordinates', ou None si non exploitable.
+        Dictionnaire minimal de la forme :
+        {
+            "type": <type_geojson>,
+            "coordinates": <structure_de_coordonnées>
+        }
+        ou None si la chaîne est vide, invalide ou ne contient pas de géométrie exploitable.
     """
     if not isinstance(geojson_str, str):
         return None
@@ -214,12 +216,12 @@ def parse_geojson_geometry(geojson_str: Optional[str]) -> Optional[Dict]:
     except Exception:
         return None
 
-    # Cas simple : la chaîne représente directement une géométrie GeoJSON.
     if isinstance(obj, dict):
+        # Cas où la chaîne représente directement une géométrie.
         if "type" in obj and "coordinates" in obj:
             return {"type": obj["type"], "coordinates": obj["coordinates"]}
 
-        # Cas Feature GeoJSON : on récupère la sous-clé geometry.
+        # Cas Feature GeoJSON : la géométrie est dans obj["geometry"].
         geometry = obj.get("geometry")
         if isinstance(geometry, dict) and {
             "type",
@@ -235,17 +237,25 @@ def parse_geojson_geometry(geojson_str: Optional[str]) -> Optional[Dict]:
 
 def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
     """
-    Déduit une unité de mesure par défaut selon le type de capteur.
+    Devine une unité de mesure raisonnable à partir du type de capteur.
+
+    Cette fonction sert de repli lorsque la colonne 'unite' n'est pas
+    renseignée dans les mesures. La logique est volontairement simple et
+    basée sur quelques mots-clés.
 
     Paramètres
     ----------
     type_capteur : str | None
-        Libellé du type de capteur (Bruit, CO2, Température, etc.).
+        Type fonctionnel du capteur (ex. 'Capteur Bruit', 'Capteur CO2').
 
     Retour
     ------
     str | None
-        Unité probable (dB, °C, ppm), ou None si aucune correspondance évidente.
+        Unité suggérée :
+        - 'dB' pour les capteurs de bruit,
+        - '°C' pour la température,
+        - 'ppm' pour le CO2,
+        - None si aucun motif n'est reconnu.
     """
     if not isinstance(type_capteur, str):
         return None
@@ -260,86 +270,62 @@ def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
     return None
 
 
-# =====================================================================
-# CONNECTIVITE MONGODB ET LOGS
-# =====================================================================
-
-def check_connexion_details() -> tuple[bool, bool]:
+def to_datetime(value) -> Optional[object]:
     """
-    Vérifie l'état du serveur MongoDB et la présence de la base Paris2055.
+    Convertit une valeur vers un objet datetime Python si possible.
 
-    Retour
-    ------
-    (bool, bool)
-        - premier booléen : True si le serveur répond au ping.
-        - second booléen : True si la base MONGO_DB_NAME existe sur le serveur.
-    """
-    client: Optional[pymongo.MongoClient] = None
-    server_ok = False
-    db_ok = False
-
-    try:
-        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
-        client.admin.command("ping")
-        server_ok = True
-
-        if MONGO_DB_NAME in client.list_database_names():
-            db_ok = True
-    except Exception:
-        # Le détail de l'exception est traité plus haut dans l'IHM.
-        server_ok = False
-        db_ok = False
-    finally:
-        if client is not None:
-            client.close()
-
-    return server_ok, db_ok
-
-
-def log_progress(
-    current: int,
-    total: int,
-    prefix: str,
-    log_fn: Callable[[str, bool], None],
-    step_percent: Optional[int] = None,
-) -> None:
-    """
-    Trace la progression d'un traitement long dans les logs.
+    La conversion s'appuie sur `pandas.to_datetime` en mode tolérant
+    (erreurs silencieuses). Les valeurs non convertibles sont renvoyées
+    sous forme de None.
 
     Paramètres
     ----------
-    current : int
-        Position actuelle dans le traitement.
-    total : int
-        Nombre total d'éléments à traiter.
-    prefix : str
-        Libellé du traitement (affiché dans le message).
-    log_fn : Callable[[str, bool], None]
-        Fonction utilisée pour écrire dans le journal (CLI ou Streamlit).
-    step_percent : int | None
-        Fréquence de rafraîchissement de l'affichage en pourcentage (10 -> tous les 10%).
+    value :
+        Valeur initiale (chaîne, timestamp, etc.) ou NaN.
 
     Retour
     ------
-    None
+    datetime | None
+        Objet datetime Python si la conversion réussit, None sinon.
     """
-    if total == 0:
-        return
+    if pd.isna(value):
+        return None
 
-    if step_percent:
-        step = max(int(total * (step_percent / 100)), 1)
-        # Mise à jour limitée pour ne pas saturer les logs.
-        if current % step != 0 and current != total:
-            return
-
-    pct = (current / total) * 100
-    message = f"    >> {prefix} : {current:,} / {total:,} ({pct:.1f}%)"
-    log_fn(message, replace_last=True)
-
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return dt.to_pydatetime()
+    except Exception:
+        return None
 
 # =====================================================================
-# TRANSFORMATION DATAFRAME -> DOCUMENTS + SAUVEGARDE JSON / MONGO
+# UTILITAIRES MONGO / ETL (COUCHE DATA, HORS UI)
 # =====================================================================
+
+def aggregate_to_df(collection, pipeline: List[Dict]) -> pd.DataFrame:
+    """
+    Exécute un pipeline d'agrégation MongoDB et renvoie le résultat
+    sous forme de DataFrame.
+
+    Paramètres
+    ----------
+    collection :
+        Instance de collection MongoDB (ex. db.lignes).
+    pipeline : list[dict]
+        Pipeline d'agrégation à appliquer sur la collection.
+
+    Retour
+    ------
+    pandas.DataFrame
+        DataFrame contenant les documents retournés par l'agrégation.
+        DataFrame vide si aucun document n'est renvoyé.
+    """
+    documents = list(collection.aggregate(pipeline))
+    if not documents:
+        return pd.DataFrame()
+    return pd.DataFrame(documents)
+
 
 def dataframe_to_dict_progressive(
     df: pd.DataFrame,
@@ -348,31 +334,34 @@ def dataframe_to_dict_progressive(
     batch_size: int = 1000,
 ) -> List[Dict]:
     """
-    Convertit un DataFrame en liste de dictionnaires avec journalisation progressive.
+    Convertit un DataFrame en liste de dictionnaires avec suivi de
+    progression par paquets.
+
+    Utile pour préparer des documents à insérer en base ou à sérialiser,
+    tout en limitant la consommation mémoire et le nombre de messages de log.
 
     Paramètres
     ----------
     df : pandas.DataFrame
-        Données en entrée.
+        Données tabulaires à convertir.
     label : str
-        Libellé du traitement pour les messages de progression.
+        Libellé utilisé dans les messages de progression.
     log_fn : Callable[[str, bool], None]
-        Fonction de log utilisée pour afficher la progression.
+        Fonction de log prenant un message et un indicateur de remplacement.
     batch_size : int
-        Taille des paquets traités à chaque itération.
+        Nombre de lignes converties à chaque itération.
 
     Retour
     ------
     list[dict]
-        Liste complète de documents prêts à être insérés en base.
+        Liste de dictionnaires (un par ligne du DataFrame).
     """
     total = len(df)
     documents: List[Dict] = []
 
     log_progress(0, total, label, log_fn)
 
-    # Traitement par paquets pour limiter la consommation mémoire et
-    # éviter d'inonder l'interface de logs.
+    # Parcours par tranches pour éviter de charger l'ensemble d'un coup
     for start in range(0, total, batch_size):
         end = min(start + batch_size, total)
         batch = df.iloc[start:end].to_dict("records")
@@ -388,21 +377,21 @@ def sauvegarder_collection_json(
     log_fn: Callable[[str, bool], None],
 ) -> str:
     """
-    Sauvegarde une collection métier dans un fichier JSON unique.
+    Sérialise une collection métier dans un fichier JSON sur disque.
 
     Paramètres
     ----------
     nom_collection : str
-        Nom fonctionnel de la collection (utilisé pour le fichier).
+        Nom logique de la collection (utilisé dans le nom du fichier).
     data : list[dict]
-        Liste des documents à sérialiser.
+        Documents à sérialiser.
     log_fn : Callable[[str, bool], None]
-        Fonction de log pour suivre l'avancement.
+        Fonction de log pour tracer l'opération.
 
     Retour
     ------
     str
-        Nom du fichier JSON écrit sur le disque.
+        Nom du fichier JSON créé (sans le chemin complet).
     """
     file_name = f"Collection_{nom_collection}.json"
     full_path = os.path.join(DOSSIER_JSON, file_name)
@@ -415,7 +404,7 @@ def sauvegarder_collection_json(
 
     try:
         with open(full_path, "w", encoding="utf-8") as json_file:
-            # default=str permet de sérialiser les types non natifs (datetime, Timestamp...).
+            # default=str : tolère les types non sérialisables nativement (datetime, Timestamp, etc.).
             json.dump(data, json_file, ensure_ascii=False, default=str)
 
         log_fn(
@@ -436,20 +425,21 @@ def insert_with_progress(
     log_fn: Callable[[str, bool], None] = print,
 ) -> None:
     """
-    Insère une liste de documents dans une collection MongoDB par gros paquets.
+    Insère une liste de documents dans une collection MongoDB par
+    paquets, en affichant l'avancement.
 
     Paramètres
     ----------
     collection :
-        Collection MongoDB cible.
+        Collection MongoDB cible (ex. db.lignes).
     docs : list[dict]
         Documents à insérer.
     label : str
-        Libellé fonctionnel de la collection (pour les logs).
+        Libellé fonctionnel de la collection (affiché dans les logs).
     batch_size : int
-        Nombre de documents insérés par batch.
+        Taille des paquets d'insertion.
     log_fn : Callable[[str, bool], None]
-        Fonction de log pour suivre la progression.
+        Fonction de log (par défaut la fonction print).
 
     Retour
     ------
@@ -467,8 +457,7 @@ def insert_with_progress(
 
     inserted_count = 0
 
-    # Insertion par paquets pour éviter les demandes trop volumineuses
-    # et laisser MongoDB optimiser l'ordre des insertions.
+    # Insertion par paquets pour éviter les requêtes trop volumineuses
     for start in range(0, total, batch_size):
         end = min(start + batch_size, total)
         batch = docs[start:end]
@@ -489,7 +478,7 @@ def insert_with_progress(
 
 
 # =====================================================================
-# CHARGEMENT DES TABLES SQLITE ET CONSTRUCTION DES DOCUMENTS METIER
+# ETL COMPLET SQLITE -> DOCUMENTS -> MONGODB
 # =====================================================================
 
 def load_tables(
@@ -497,22 +486,24 @@ def load_tables(
     log_fn: Callable[[str, bool], None],
 ) -> Dict[str, pd.DataFrame]:
     """
-    Charge les tables nécessaires depuis la base SQLite dans un dictionnaire de DataFrame.
+    Charge les tables nécessaires depuis la base SQLite dans un
+    dictionnaire de DataFrame.
 
     Paramètres
     ----------
     conn : sqlite3.Connection
-        Connexion SQLite déjà ouverte.
+        Connexion SQLite déjà ouverte sur le fichier de base.
     log_fn : Callable[[str, bool], None]
-        Fonction de log pour tracer les étapes de chargement.
+        Fonction de log utilisée pour tracer les étapes.
 
     Retour
     ------
     dict[str, pandas.DataFrame]
-        Dictionnaire mappant le nom de la table vers son contenu.
+        Dictionnaire associant le nom de table à son DataFrame.
     """
     log_fn("📥 [SQL] Lecture des tables SQLite source...", replace_last=False)
     tables: Dict[str, pd.DataFrame] = {}
+
     table_names = [
         "Ligne",
         "Quartier",
@@ -539,13 +530,20 @@ def load_tables(
     )
     return tables
 
+
 def build_lignes_docs(
     tables: Dict[str, pd.DataFrame],
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents 'lignes' avec une optimisation majeure (Dénormalisation)
-    pour rendre les requêtes D et K instantanées.
+    Construit les documents de la collection 'lignes' à partir des
+    tables relationnelles.
+
+    Le document de sortie par ligne contient :
+    - les caractéristiques de la ligne ;
+    - des sous-documents d'arrêts, horaires, capteurs et trafic ;
+    - des caches optimisés pour certains calculs (chauffeurs, véhicules,
+      statistiques de trafic, CO2 moyen).
     """
     df_l = tables["Ligne"]
     df_a = tables["Arret"]
@@ -559,16 +557,18 @@ def build_lignes_docs(
     df_cap = tables["Capteur"]
     df_mes = tables["Mesure"]
 
-    # 1. Pré-calcul CO2 (inchangé)
+    # 1. Calcul du CO2 moyen par ligne (à partir des mesures CO2 aux arrêts)
     co2_by_ligne: Dict[int, float] = {}
     if not df_cap.empty and not df_mes.empty:
         df_full = df_cap.merge(df_mes, on="id_capteur")
         df_co2 = df_full[df_full["type_capteur"] == "CO2"]
         df_co2_ligne = df_co2.merge(df_a[["id_arret", "id_ligne"]], on="id_arret")
         if not df_co2_ligne.empty:
-            co2_by_ligne = df_co2_ligne.groupby("id_ligne")["valeur"].mean().to_dict()
+            co2_by_ligne = (
+                df_co2_ligne.groupby("id_ligne")["valeur"].mean().to_dict()
+            )
 
-    # 2. OPTIMISATION QUERY K : Cache Chauffeurs
+    # 2. Préparation du cache chauffeurs par ligne (pour la requête K optimisée)
     log_fn("⚡ [OPTIM] Construction du cache Chauffeurs...", replace_last=False)
     chauffeurs_cache_by_ligne: Dict[int, List[Dict]] = {}
     if not df_v.empty and not df_c.empty:
@@ -589,12 +589,11 @@ def build_lignes_docs(
                 if c_list:
                     chauffeurs_cache_by_ligne[int(id_ligne)] = c_list
 
-    # 3. OPTIMISATION QUERY D & L : Cache Véhicules Uniques par Ligne
-    # On évite l'unwind monstrueux des horaires
+    # 3. Préparation du cache véhicules par ligne (pour les requêtes D et L)
     log_fn("⚡ [OPTIM] Construction du cache Véhicules...", replace_last=False)
     vehicules_cache_by_ligne: Dict[int, List[Dict]] = {}
     if not df_v.empty:
-        # On suppose que df_v a une colonne id_ligne (la ligne officielle du véhicule)
+        # On suppose que df_v contient la colonne id_ligne (ligne officielle du véhicule)
         for id_ligne, group in df_v.groupby("id_ligne"):
             if pd.isna(id_ligne):
                 continue
@@ -605,20 +604,17 @@ def build_lignes_docs(
                         "id_vehicule": int(row["id_vehicule"]),
                         "immatriculation": row["immatriculation"],
                     }
-                    # On ajoute aussi le type_vehicule pour la requête L
                     if pd.notnull(row.get("type_vehicule")):
                         v_doc["type_vehicule"] = row["type_vehicule"]
                     v_list.append(v_doc)
             if v_list:
                 vehicules_cache_by_ligne[int(id_ligne)] = v_list
 
-    # 4. OPTIMISATION QUERY K & A : Stats Trafic pré-calculées
-    # On évite de scanner le tableau trafic en lecture
+    # 4. Pré-calcul des statistiques de trafic par ligne et détail des incidents
     log_fn("⚡ [OPTIM] Pré-calcul des stats Trafic...", replace_last=False)
     stats_trafic_by_ligne: Dict[int, Dict] = {}
     trafic_by_ligne: Dict[int, List[Dict]] = {}
 
-    # On prépare aussi le détail pour les autres requêtes, mais on calcule les stats ici
     incidents_by_trafic: Dict[int, List[Dict]] = {}
     if not df_i.empty:
         for id_trafic, group in df_i.groupby("id_trafic"):
@@ -627,7 +623,7 @@ def build_lignes_docs(
             ].to_dict("records")
 
     if not df_t.empty:
-        # Calcul vectoriel Pandas (beaucoup plus rapide que Mongo)
+        # Agrégation vectorisée via Pandas pour obtenir les stats par ligne
         stats_group = df_t.groupby("id_ligne")["retard_minutes"].agg(
             ["sum", "count", "mean"]
         )
@@ -639,7 +635,7 @@ def build_lignes_docs(
                 "moyenne_precalc": float(row_stat["mean"]),
             }
 
-        # Construction standard du détail trafic
+        # Construction des sous-documents de trafic (liste par ligne)
         for _, row in df_t.iterrows():
             if pd.isna(row["id_ligne"]):
                 continue
@@ -650,7 +646,7 @@ def build_lignes_docs(
                 tdoc["incidents"] = incidents_by_trafic[row["id_trafic"]]
             trafic_by_ligne.setdefault(int(row["id_ligne"]), []).append(tdoc)
 
-    # 5. Préparations standards (Arrêts, Quartiers, Horaires...)
+    # 5. Préparations pour arrêts, quartiers, capteurs et horaires
     quartiers_by_arret: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
         tmp = df_aq.merge(
@@ -677,13 +673,16 @@ def build_lignes_docs(
 
     horaires_by_arret: Dict[int, List[Dict]] = {}
     if not df_h.empty:
+        # On rattache les véhicules aux horaires pour enrichir le sous-document
         df_v_clean = df_v.rename(columns={"id_ligne": "id_ligne_officielle"})
         df_h_full = df_h.merge(
             df_v_clean, on="id_vehicule", how="left", suffixes=("", "_vehicule")
         )
-        for col in ["heure_prevue"]:
-            if col in df_h_full.columns:
-                df_h_full[col] = pd.to_datetime(df_h_full[col], errors="coerce")
+        if "heure_prevue" in df_h_full.columns:
+            df_h_full["heure_prevue"] = pd.to_datetime(
+                df_h_full["heure_prevue"],
+                errors="coerce",
+            )
 
         total_rows = len(df_h_full)
         log_progress(0, total_rows, "Groupement Horaires/Arrêts", log_fn)
@@ -692,7 +691,6 @@ def build_lignes_docs(
             if pd.isna(row.id_arret):
                 continue
 
-            # Construction allégée
             vehicule: Dict[str, object] = {}
             if getattr(row, "id_vehicule", None) and not pd.isna(row.id_vehicule):
                 vehicule["id_vehicule"] = int(row.id_vehicule)
@@ -716,27 +714,27 @@ def build_lignes_docs(
             horaires_by_arret.setdefault(int(row.id_arret), []).append(horaire)
             if idx % 10000 == 0:
                 log_progress(idx, total_rows, "Groupement Horaires/Arrêts", log_fn)
+
         log_fn("", replace_last=False)
 
+    # Consolidation des arrêts par ligne (incluant quartiers, horaires, capteurs)
     arrets_by_ligne: Dict[int, List[Dict]] = {}
     for _, row in df_a.iterrows():
         if pd.isna(row["id_ligne"]) or pd.isna(row["id_arret"]):
             continue
         id_ligne = int(row["id_ligne"])
         id_arret = int(row["id_arret"])
-        
-        # --- MODIFICATION ICI : On récupère Lat/Long ---
+
         adoc: Dict[str, object] = {
-            "id_arret": id_arret, 
-            "nom": row["nom"]
+            "id_arret": id_arret,
+            "nom": row["nom"],
         }
-        
-        # On vérifie si les colonnes existent et ne sont pas vides
+
+        # Coordonnées géographiques si disponibles
         if "latitude" in row and pd.notnull(row["latitude"]):
             adoc["latitude"] = float(row["latitude"])
         if "longitude" in row and pd.notnull(row["longitude"]):
             adoc["longitude"] = float(row["longitude"])
-        # -----------------------------------------------
 
         if id_arret in quartiers_by_arret:
             adoc["quartiers"] = quartiers_by_arret[id_arret]
@@ -744,10 +742,10 @@ def build_lignes_docs(
             adoc["horaires"] = horaires_by_arret[id_arret]
         if id_arret in capteurs_ids_by_arret:
             adoc["capteurs_ids"] = capteurs_ids_by_arret[id_arret]
-            
+
         arrets_by_ligne.setdefault(id_ligne, []).append(adoc)
 
-    # 6. Assemblage final
+    # 6. Assemblage final des documents 'lignes'
     docs: List[Dict] = []
     total = len(df_l)
     log_progress(0, total, "Assemblage Lignes", log_fn)
@@ -755,6 +753,7 @@ def build_lignes_docs(
     for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
         if pd.isna(row["id_ligne"]):
             continue
+
         id_l = int(row["id_ligne"])
         doc: Dict[str, object] = {
             "id_ligne": id_l,
@@ -762,22 +761,17 @@ def build_lignes_docs(
             "type": row.get("type"),
         }
 
-        # Injection CO2
+        # Champs optimisés / dérivés
         if id_l in co2_by_ligne:
             doc["co2_moyen_ligne"] = co2_by_ligne[id_l]
-
-        # Injection Cache Chauffeurs (Pour Query K)
         if id_l in chauffeurs_cache_by_ligne:
             doc["chauffeurs_cache"] = chauffeurs_cache_by_ligne[id_l]
-
-        # Injection Cache Véhicules (Pour Query D et L)
         if id_l in vehicules_cache_by_ligne:
             doc["vehicules_cache"] = vehicules_cache_by_ligne[id_l]
-
-        # Injection Stats Trafic (Pour Query K et A)
         if id_l in stats_trafic_by_ligne:
             doc["stats_trafic"] = stats_trafic_by_ligne[id_l]
 
+        # Sous-documents détaillés
         if id_l in arrets_by_ligne:
             doc["arrets"] = arrets_by_ligne[id_l]
         if id_l in trafic_by_ligne:
@@ -797,25 +791,18 @@ def build_quartiers_docs(
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents de la collection 'quartiers' à partir des tables SQLite.
+    Construit les documents de la collection 'quartiers' à partir des
+    tables SQLite (quartiers, arrêts, lignes).
 
-    Paramètres
-    ----------
-    tables : dict[str, pandas.DataFrame]
-        Tables SQLite préchargées.
-    log_fn : Callable[[str, bool], None]
-        Fonction de log pour tracer la progression.
-
-    Retour
-    ------
-    list[dict]
-        Documents prêts à être insérés dans la collection 'quartiers'.
+    Chaque quartier contient un polygone (geom) éventuel et la liste
+    des arrêts qui s'y trouvent (avec la ligne associée).
     """
     df_q = tables["Quartier"]
     df_aq = tables["ArretQuartier"]
     df_a = tables["Arret"]
     df_l = tables["Ligne"]
 
+    # 1. Regrouper les arrêts par quartier
     arrets_by_quartier: Dict[int, List[Dict]] = {}
     if not df_aq.empty:
         log_fn(
@@ -871,8 +858,10 @@ def build_quartiers_docs(
                 log_fn,
                 step_percent=10,
             )
+
         log_fn("", replace_last=False)
 
+    # 2. Construction finale des documents quartier
     docs: List[Dict] = []
     total_quartiers = len(df_q)
     label_final = "Construction documents quartiers"
@@ -909,25 +898,20 @@ def build_capteurs_docs(
     log_fn: Callable[[str, bool], None],
 ) -> List[Dict]:
     """
-    Construit les documents de la collection 'capteurs' à partir des tables SQLite.
+    Construit les documents de la collection 'capteurs' à partir des
+    tables SQLite (capteurs, mesures, arrêts, lignes).
 
-    Paramètres
-    ----------
-    tables : dict[str, pandas.DataFrame]
-        Tables SQLite préchargées.
-    log_fn : Callable[[str, bool], None]
-        Fonction de log pour suivre le traitement.
-
-    Retour
-    ------
-    list[dict]
-        Documents prêts à être insérés dans la collection 'capteurs'.
+    Chaque document capteur contient :
+    - ses métadonnées (type, position) ;
+    - l'arrêt lié (avec ligne et nom) ;
+    - la liste de ses mesures (valeur, horodatage, unité).
     """
     df_capteur = tables["Capteur"]
     df_mesure = tables["Mesure"]
     df_arret = tables["Arret"]
     df_ligne = tables["Ligne"]
 
+    # 1. Préparer les informations d'arrêt associées à chaque capteur
     arret_info_by_id: Dict[int, Dict] = {}
     if not df_arret.empty:
         df_a_l = df_arret.merge(
@@ -950,6 +934,7 @@ def build_capteurs_docs(
                 info["nom_ligne"] = row["nom_ligne"]
             arret_info_by_id[arret_id] = info
 
+    # 2. Mémoriser le type de chaque capteur (utile pour inférer l'unité)
     type_capteur_by_id: Dict[int, Optional[str]] = {}
     for _, row in df_capteur.iterrows():
         if pd.isna(row["id_capteur"]):
@@ -958,6 +943,7 @@ def build_capteurs_docs(
         capteur_id = int(row["id_capteur"])
         type_capteur_by_id[capteur_id] = row.get("type_capteur")
 
+    # 3. Regrouper les mesures par capteur avec homogénéisation de l'unité
     mesures_by_capteur: Dict[int, List[Dict]] = {}
     if not df_mesure.empty:
         log_fn(
@@ -1007,8 +993,10 @@ def build_capteurs_docs(
                 log_fn,
                 step_percent=10,
             )
+
         log_fn("", replace_last=False)
 
+    # 4. Construction finale des documents capteur
     docs: List[Dict] = []
     total_capteurs = len(df_capteur)
     label_final = "Construction documents capteurs"
@@ -1048,21 +1036,19 @@ def build_capteurs_docs(
     return docs
 
 
-# =====================================================================
-# ORCHESTRATION MIGRATION SQLITE -> MONGODB
-# =====================================================================
-
 def creer_index_mongodb(
     db: pymongo.database.Database,
     log_fn: Callable[[str, bool], None],
 ) -> None:
     """
-    Crée les index utiles pour accélérer les principales requêtes MongoDB.
+    Crée les principaux index MongoDB nécessaires aux requêtes
+    de l'application sur les collections 'lignes', 'capteurs' et
+    'quartiers'.
 
     Paramètres
     ----------
     db : pymongo.database.Database
-        Base MongoDB 'Paris2055'.
+        Base MongoDB cible (ex. client[MONGO_DB_NAME]).
     log_fn : Callable[[str, bool], None]
         Fonction de log pour tracer la création des index.
 
@@ -1072,20 +1058,21 @@ def creer_index_mongodb(
     """
     log_fn("[Index] Création des index MongoDB...", replace_last=False)
     try:
+        # Index sur les champs de recherche des lignes
         db.lignes.create_index("id_ligne")
         db.lignes.create_index("nom_ligne")
         db.lignes.create_index("type")
 
+        # Index sur les capteurs et leur rattachement à un arrêt/ligne
         db.capteurs.create_index("id_capteur")
         db.capteurs.create_index("type_capteur")
         db.capteurs.create_index("arret.id_ligne")
         db.capteurs.create_index("arret.id_arret")
 
+        # Index géospatiaux pour les quartiers et les capteurs
         db.quartiers.create_index([("geom", "2dsphere")])
         db.capteurs.create_index([("position", "2dsphere")])
 
-        #            le nouveau modèle stockant les arrêts imbriqués dans 'lignes'
-        #              et 'quartiers'. Cela évite de créer une collection vide.
         log_fn("[Index] Index créés avec succès.", replace_last=False)
     except Exception as exc:
         log_fn(
@@ -1098,21 +1085,25 @@ def migrer_sqlite_vers_mongo(
     log_fn_raw: Callable[[str, bool], None],
 ) -> None:
     """
-    Lance la migration complète de SQLite vers MongoDB pour le modèle document.
+    Effectue la migration complète des données depuis la base SQLite
+    (modèle relationnel) vers la base MongoDB (modèle document).
 
-    Étapes
-    ------
-    - Nettoyage d'anciennes collections cibles.
-    - Lecture des tables SQLite.
-    - Construction des documents métier pour 'lignes', 'quartiers', 'capteurs'.
-    - Sauvegarde en JSON intermédiaire.
-    - Insertion des documents dans MongoDB.
-    - Création des index.
+    Étapes principales :
+    1. Nettoyage des collections existantes dans MongoDB.
+    2. Chargement des tables SQLite en DataFrames.
+    3. Construction des documents pour :
+       - lignes
+       - quartiers
+       - capteurs
+    4. Sauvegarde intermédiaire en JSON.
+    5. Insertion dans MongoDB par paquets.
+    6. Création des index.
 
     Paramètres
     ----------
     log_fn_raw : Callable[[str, bool], None]
-        Fonction de log fournie par l'IHM (Streamlit).
+        Fonction de log fournie par l'IHM. Peut ou non supporter
+        l'argument `replace_last` (géré par un wrapper interne).
 
     Retour
     ------
@@ -1121,11 +1112,10 @@ def migrer_sqlite_vers_mongo(
 
     def secure_log(message: str, replace_last: bool = False) -> None:
         """
-        Adapte la fonction de log fournie pour supporter ou non l'argument
-        'replace_last'.
+        Wrapper de la fonction de log fournie par l'appelant.
 
-        Cette fonction garantit que la migration reste fonctionnelle même
-        si l'appelant ne gère pas ce paramètre optionnel.
+        Si la fonction passée ne gère pas l'argument `replace_last`,
+        on bascule sur un simple print pour éviter les plantages.
         """
         try:
             log_fn_raw(message, replace_last=replace_last)
@@ -1138,16 +1128,18 @@ def migrer_sqlite_vers_mongo(
         tables: Dict[str, pd.DataFrame],
     ) -> None:
         """
-        Exécute une étape de migration complète pour une collection.
+        Exécute le pipeline complet de construction et d'insertion
+        pour une collection métier donnée.
 
         Paramètres
         ----------
         label : str
-            Nom de la collection MongoDB cible.
+            Nom de la collection MongoDB et du fichier JSON (ex. 'lignes').
         build_func : Callable
-            Fonction de construction des documents métier.
+            Fonction de construction des documents à partir des tables
+            SQLite (ex. build_lignes_docs).
         tables : dict[str, pandas.DataFrame]
-            Ensemble des tables SQLite préchargées.
+            Tables SQLite préchargées (voir load_tables).
         """
         secure_log(
             f"\n🔹 --- TRAITEMENT COLLECTION : {label.upper()} ---",
@@ -1173,7 +1165,7 @@ def migrer_sqlite_vers_mongo(
             log_fn=secure_log,
         )
 
-        # Libération mémoire volontaire pour les gros volumes.
+        # Libération explicite de la mémoire associée à cette collection
         del documents
 
     client = pymongo.MongoClient(MONGO_URI)
@@ -1186,6 +1178,7 @@ def migrer_sqlite_vers_mongo(
     )
 
     try:
+        # 1. Suppression des anciennes collections (hygiène avant migration)
         secure_log(
             "\n🧹 [INIT] Nettoyage de la base cible...",
             replace_last=False,
@@ -1213,8 +1206,7 @@ def migrer_sqlite_vers_mongo(
                     db[collection_name].drop()
                     dropped_count += 1
                 except PyMongoError:
-                    # L'échec de suppression d'une collection ne doit pas bloquer
-                    # l'ensemble du processus de migration.
+                    # Un échec de drop ne doit pas bloquer toute la migration
                     continue
 
         secure_log(
@@ -1222,6 +1214,7 @@ def migrer_sqlite_vers_mongo(
             replace_last=False,
         )
 
+        # 2. Ouverture de la base SQLite et chargement des tables
         if not os.path.exists(DB_FILE):
             raise FileNotFoundError(f"DB introuvable: {DB_FILE}")
 
@@ -1231,10 +1224,12 @@ def migrer_sqlite_vers_mongo(
         finally:
             sqlite_conn.close()
 
+        # 3. Traitement des collections métiers
         process_step("lignes", build_lignes_docs, tables)
         process_step("quartiers", build_quartiers_docs, tables)
         process_step("capteurs", build_capteurs_docs, tables)
 
+        # 4. Création des index
         secure_log(
             "\n🔎 [INDEX] Optimisation de la base...",
             replace_last=False,
@@ -1251,9 +1246,8 @@ def migrer_sqlite_vers_mongo(
     finally:
         client.close()
 
-
 # =====================================================================
-# REQUETES SQL (PARTIE 1) ET CACHE CSV
+# SQL METIER : définition des objectifs et exécution des requêtes SQLite
 # =====================================================================
 
 REQUETES_OBJECTIFS: Dict[str, str] = {
@@ -1316,508 +1310,74 @@ REQUETES_OBJECTIFS: Dict[str, str] = {
 }
 
 
+@st.cache_data(show_spinner=False)
 def executer_toutes_les_requetes() -> Dict[str, pd.DataFrame]:
     """
-    Exécute l'ensemble des requêtes SQL définies A -> N sur la base SQLite.
-
-    Retour
-    ------
-    dict[str, pandas.DataFrame]
-        Dictionnaire associant le code de requête à son DataFrame résultat.
+    Exécute toutes les requêtes SQL métier (A → N) sur la base SQLite.
+    UTILISE LE CACHE STREAMLIT : Ne recalcule pas si déjà fait.
     """
     if not os.path.exists(DB_FILE):
-        raise FileNotFoundError(DB_FILE)
+        return {}
 
     resultats: Dict[str, pd.DataFrame] = {}
 
+    # Dictionnaire des requêtes (identique à avant)
     sql_queries: Dict[str, str] = {
-        "A": (
-            "SELECT L.nom_ligne, "
-            "AVG(T.retard_minutes) AS moyenne_retard_minutes "
-            "FROM Trafic AS T "
-            "JOIN Ligne AS L ON T.id_ligne = L.id_ligne "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY moyenne_retard_minutes DESC;"
-        ),
-        "B": (
-            "SELECT "
-            "    L.id_ligne, "
-            "    AVG(T.total_passagers_jour) AS moyenne_passagers_jour "
-            "FROM ( "
-            "    SELECT "
-            "        A.id_ligne, "
-            "        DATE(H.heure_prevue) AS jour, "
-            "        SUM(H.passagers_estimes) AS total_passagers_jour "
-            "    FROM Horaire AS H "
-            "    JOIN Arret AS A ON H.id_arret = A.id_arret "
-            "    GROUP BY "
-            "        A.id_ligne, "
-            "        jour "
-            ") AS T "
-            "JOIN Ligne AS L ON T.id_ligne = L.id_ligne "
-            "GROUP BY L.id_ligne "
-            "ORDER BY moyenne_passagers_jour DESC;"
-        ),
-        "C": (
-            "SELECT L.nom_ligne, "
-            "COUNT(DISTINCT I.id_trafic) AS nb_trafic_avec_incident, "
-            "COUNT(DISTINCT T.id_trafic) AS nb_total_trafic, "
-            "CASE "
-            "WHEN COUNT(DISTINCT T.id_trafic) = 0 THEN 0 "
-            "ELSE "
-            "(CAST(COUNT(DISTINCT I.id_trafic) AS REAL) "
-            "/ COUNT(DISTINCT T.id_trafic)) * 100 "
-            "END AS taux_incident_pourcent "
-            "FROM Ligne AS L "
-            "LEFT JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "LEFT JOIN Incident AS I ON T.id_trafic = I.id_trafic "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY taux_incident_pourcent DESC;"
-        ),
-        "D": (
-            "SELECT V.id_vehicule, V.immatriculation, "
-            "AVG(M.valeur) AS moyenne_co2 "
-            "FROM Vehicule AS V "
-            "JOIN Ligne AS L ON V.id_ligne = L.id_ligne "
-            "JOIN Arret AS A ON L.id_ligne = A.id_ligne "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'CO2' "
-            "GROUP BY V.id_vehicule, V.immatriculation "
-            "ORDER BY moyenne_co2 DESC;"
-        ),
-        "E": (
-            "SELECT Q.nom, "
-            "AVG(M.valeur) AS moyenne_bruit_db "
-            "FROM Quartier AS Q "
-            "JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier "
-            "JOIN Arret AS A ON AQ.id_arret = A.id_arret "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'Bruit' "
-            "GROUP BY Q.nom "
-            "ORDER BY moyenne_bruit_db DESC "
-            "LIMIT 5;"
-        ),
-        "F": (
-            "SELECT DISTINCT L.nom_ligne "
-            "FROM Ligne AS L "
-            "JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "WHERE T.retard_minutes > 10 "
-            "EXCEPT "
-            "SELECT DISTINCT L.nom_ligne "
-            "FROM Ligne AS L "
-            "JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "JOIN Incident AS I ON T.id_trafic = I.id_trafic;"
-        ),
-        "G": (
-            "SELECT "
-            "COUNT(*) AS total_trajets, "
-            "SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) "
-            "AS trajets_sans_retard, "
-            "(CAST(SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) "
-            "AS REAL) / COUNT(*)) * 100 "
-            "AS taux_ponctualite_global_pourcent "
-            "FROM Trafic;"
-        ),
-        "H": (
-            "SELECT Q.nom, "
-            "COUNT(AQ.id_arret) AS nombre_arrets "
-            "FROM Quartier AS Q "
-            "LEFT JOIN ArretQuartier AS AQ "
-            "ON Q.id_quartier = AQ.id_quartier "
-            "GROUP BY Q.nom "
-            "ORDER BY nombre_arrets DESC;"
-        ),
-        "I": (
-            "WITH AvgRetard AS ( "
-            "  SELECT id_ligne, "
-            "         AVG(retard_minutes) AS moyenne_retard "
-            "  FROM Trafic "
-            "  GROUP BY id_ligne "
-            "), "
-            "AvgCO2 AS ( "
-            "  SELECT A.id_ligne, "
-            "         AVG(M.valeur) AS moyenne_co2 "
-            "  FROM Mesure AS M "
-            "  JOIN Capteur AS C ON M.id_capteur = C.id_capteur "
-            "  JOIN Arret AS A ON C.id_arret = A.id_arret "
-            "  WHERE C.type_capteur = 'CO2' "
-            "  GROUP BY A.id_ligne "
-            ") "
-            "SELECT L.nom_ligne, "
-            "COALESCE(R.moyenne_retard, 0) AS moyenne_retard, "
-            "COALESCE(C.moyenne_co2, 0) AS moyenne_co2 "
-            "FROM Ligne AS L "
-            "LEFT JOIN AvgRetard AS R ON L.id_ligne = R.id_ligne "
-            "LEFT JOIN AvgCO2 AS C ON L.id_ligne = C.id_ligne "
-            "ORDER BY L.nom_ligne;"
-        ),
-        "J": (
-            "SELECT L.nom_ligne, "
-            "AVG(M.valeur) AS moyenne_temperature "
-            "FROM Ligne AS L "
-            "JOIN Arret AS A ON L.id_ligne = A.id_ligne "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'Temperature' "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY moyenne_temperature DESC;"
-        ),
-        "K": (
-            "SELECT C.nom, "
-            "AVG(T.retard_minutes) AS moyenne_retard_minutes "
-            "FROM Chauffeur AS C "
-            "JOIN Vehicule AS V ON C.id_chauffeur = V.id_chauffeur "
-            "JOIN Trafic AS T ON V.id_ligne = T.id_ligne "
-            "GROUP BY C.nom "
-            "ORDER BY moyenne_retard_minutes DESC;"
-        ),
-        "L": (
-            "SELECT L.nom_ligne, "
-            "COUNT(V.id_vehicule) AS total_vehicules, "
-            "SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) "
-            "AS nb_electriques, "
-            "(CAST(SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 "
-            "ELSE 0 END) AS REAL) / COUNT(V.id_vehicule)) * 100 "
-            "AS pourcentage_electrique "
-            "FROM Ligne AS L "
-            "JOIN Vehicule AS V ON L.id_ligne = V.id_ligne "
-            "WHERE L.type = 'Bus' "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY pourcentage_electrique DESC;"
-        ),
-        "M": (
-            "SELECT C.id_capteur, "
-            "C.latitude, "
-            "C.longitude, "
-            "AVG(M.valeur) AS moyenne_co2, "
-            "CASE "
-            "  WHEN AVG(M.valeur) > 800 THEN 'Élevé' "
-            "  WHEN AVG(M.valeur) > 450 THEN 'Moyen' "
-            "  ELSE 'Faible' "
-            "END AS niveau_pollution "
-            "FROM Capteur AS C "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'CO2' "
-            "GROUP BY C.id_capteur, C.latitude, C.longitude "
-            "ORDER BY moyenne_co2 DESC;"
-        ),
-        "N": (
-            "SELECT nom_ligne, "
-            "type, "
-            "frequentation_moyenne, "
-            "CASE "
-            "  WHEN frequentation_moyenne > 2000 THEN 'Haute Fréquentation' "
-            "  WHEN frequentation_moyenne > 1000 THEN 'Moyenne Fréquentation' "
-            "  ELSE 'Basse Fréquentation' "
-            "END AS categorie_frequentation "
-            "FROM Ligne "
-            "ORDER BY frequentation_moyenne DESC;"
-        ),
+        "A": "SELECT L.nom_ligne, AVG(T.retard_minutes) AS moyenne_retard_minutes FROM Trafic AS T JOIN Ligne AS L ON T.id_ligne = L.id_ligne GROUP BY L.nom_ligne ORDER BY moyenne_retard_minutes DESC;",
+        "B": "SELECT L.id_ligne, AVG(T.total_passagers_jour) AS moyenne_passagers_jour FROM ( SELECT A.id_ligne, DATE(H.heure_prevue) AS jour, SUM(H.passagers_estimes) AS total_passagers_jour FROM Horaire AS H JOIN Arret AS A ON H.id_arret = A.id_arret GROUP BY A.id_ligne, jour ) AS T JOIN Ligne AS L ON T.id_ligne = L.id_ligne GROUP BY L.id_ligne ORDER BY moyenne_passagers_jour DESC;",
+        "C": "SELECT L.nom_ligne, COUNT(DISTINCT I.id_trafic) AS nb_trafic_avec_incident, COUNT(DISTINCT T.id_trafic) AS nb_total_trafic, CASE WHEN COUNT(DISTINCT T.id_trafic) = 0 THEN 0 ELSE (CAST(COUNT(DISTINCT I.id_trafic) AS REAL) / COUNT(DISTINCT T.id_trafic)) * 100 END AS taux_incident_pourcent FROM Ligne AS L LEFT JOIN Trafic AS T ON L.id_ligne = T.id_ligne LEFT JOIN Incident AS I ON T.id_trafic = I.id_trafic GROUP BY L.nom_ligne ORDER BY taux_incident_pourcent DESC;",
+        "D": "SELECT V.id_vehicule, V.immatriculation, AVG(M.valeur) AS moyenne_co2 FROM Vehicule AS V JOIN Ligne AS L ON V.id_ligne = L.id_ligne JOIN Arret AS A ON L.id_ligne = A.id_ligne JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'CO2' GROUP BY V.id_vehicule, V.immatriculation ORDER BY moyenne_co2 DESC;",
+        "E": "SELECT Q.nom, AVG(M.valeur) AS moyenne_bruit_db FROM Quartier AS Q JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier JOIN Arret AS A ON AQ.id_arret = A.id_arret JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'Bruit' GROUP BY Q.nom ORDER BY moyenne_bruit_db DESC LIMIT 5;",
+        "F": "SELECT DISTINCT L.nom_ligne FROM Ligne AS L JOIN Trafic AS T ON L.id_ligne = T.id_ligne WHERE T.retard_minutes > 10 EXCEPT SELECT DISTINCT L.nom_ligne FROM Ligne AS L JOIN Trafic AS T ON L.id_ligne = T.id_ligne JOIN Incident AS I ON T.id_trafic = I.id_trafic;",
+        "G": "SELECT COUNT(*) AS total_trajets, SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) AS trajets_sans_retard, (CAST(SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)) * 100 AS taux_ponctualite_global_pourcent FROM Trafic;",
+        "H": "SELECT Q.nom, COUNT(AQ.id_arret) AS nombre_arrets FROM Quartier AS Q LEFT JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier GROUP BY Q.nom ORDER BY nombre_arrets DESC;",
+        "I": "WITH AvgRetard AS ( SELECT id_ligne, AVG(retard_minutes) AS moyenne_retard FROM Trafic GROUP BY id_ligne ), AvgCO2 AS ( SELECT A.id_ligne, AVG(M.valeur) AS moyenne_co2 FROM Mesure AS M JOIN Capteur AS C ON M.id_capteur = C.id_capteur JOIN Arret AS A ON C.id_arret = A.id_arret WHERE C.type_capteur = 'CO2' GROUP BY A.id_ligne ) SELECT L.nom_ligne, COALESCE(R.moyenne_retard, 0) AS moyenne_retard, COALESCE(C.moyenne_co2, 0) AS moyenne_co2 FROM Ligne AS L LEFT JOIN AvgRetard AS R ON L.id_ligne = R.id_ligne LEFT JOIN AvgCO2 AS C ON L.id_ligne = C.id_ligne ORDER BY L.nom_ligne;",
+        "J": "SELECT L.nom_ligne, AVG(M.valeur) AS moyenne_temperature FROM Ligne AS L JOIN Arret AS A ON L.id_ligne = A.id_ligne JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'Temperature' GROUP BY L.nom_ligne ORDER BY moyenne_temperature DESC;",
+        "K": "SELECT C.nom, AVG(T.retard_minutes) AS moyenne_retard_minutes FROM Chauffeur AS C JOIN Vehicule AS V ON C.id_chauffeur = V.id_chauffeur JOIN Trafic AS T ON V.id_ligne = T.id_ligne GROUP BY C.nom ORDER BY moyenne_retard_minutes DESC;",
+        "L": "SELECT L.nom_ligne, COUNT(V.id_vehicule) AS total_vehicules, SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) AS nb_electriques, (CAST(SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) AS REAL) / COUNT(V.id_vehicule)) * 100 AS pourcentage_electrique FROM Ligne AS L JOIN Vehicule AS V ON L.id_ligne = V.id_ligne WHERE L.type = 'Bus' GROUP BY L.nom_ligne ORDER BY pourcentage_electrique DESC;",
+        "M": "SELECT C.id_capteur, C.latitude, C.longitude, AVG(M.valeur) AS moyenne_co2, CASE WHEN AVG(M.valeur) > 800 THEN 'Élevé' WHEN AVG(M.valeur) > 450 THEN 'Moyen' ELSE 'Faible' END AS niveau_pollution FROM Capteur AS C JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'CO2' GROUP BY C.id_capteur, C.latitude, C.longitude ORDER BY moyenne_co2 DESC;",
+        "N": "SELECT nom_ligne, type, frequentation_moyenne, CASE WHEN frequentation_moyenne > 2000 THEN 'Haute Fréquentation' WHEN frequentation_moyenne > 1000 THEN 'Moyenne Fréquentation' ELSE 'Basse Fréquentation' END AS categorie_frequentation FROM Ligne ORDER BY frequentation_moyenne DESC;",
     }
 
     with sqlite3.connect(DB_FILE) as conn:
         for code, query in sql_queries.items():
             try:
+                # On ne fait que lire, pas d'écriture CSV ici
                 df_result = pd.read_sql_query(query, conn)
-                enregistrer_resultats_csv(
-                    DOSSIER_CSV,
-                    f"resultat_req_{code.lower()}.csv",
-                    df_result,
-                )
                 resultats[code] = df_result
             except Exception as exc:
                 resultats[code] = pd.DataFrame([{"erreur": str(exc)}])
 
     return resultats
 
-
-def charger_cache_csv() -> tuple[Dict[str, pd.DataFrame], bool]:
+def forcer_ecriture_csv_sql(resultats: Dict[str, pd.DataFrame]) -> None:
     """
-    Recharge, si disponibles, les résultats SQL précédemment exportés en CSV.
-
-    Retour
-    ------
-    (dict[str, pandas.DataFrame], bool)
-        - Dictionnaire des résultats trouvés (par code de requête).
-        - Booléen indiquant si au moins un CSV a été retrouvé.
+    Fonction NON CACHÉE : Écrit les résultats sur le disque.
+    Appelée explicitement après le calcul.
     """
-    print("Chargement cache CSV...", end="\n")
-    resultats: Dict[str, pd.DataFrame] = {}
-    found_any = False
-
-    for code in REQUETES_OBJECTIFS.keys():
-        path = os.path.join(DOSSIER_CSV, f"resultat_req_{code.lower()}.csv")
-        if os.path.exists(path):
-            try:
-                resultats[code] = pd.read_csv(path)
-                found_any = True
-            except Exception:
-                resultats[code] = pd.DataFrame()
-
-    if found_any:
-        print("CSV chargés ✅")
-    else:
-        print(" Non trouve")
-    print("\n")
-    return resultats, found_any
-
-
-def charger_cache_csv_mongo() -> tuple[Dict[str, pd.DataFrame], bool]:
-    """
-    Recharge, si disponibles, les résultats MongoDB précédemment exportés en CSV.
-
-    Retour
-    ------
-    (dict[str, pandas.DataFrame], bool)
-        - Dictionnaire des résultats trouvés (par code de requête).
-        - Booléen indiquant si au moins un CSV a été retrouvé.
-    """
-    print("Chargement cache CSV MongoDB...", end="\n")
-    resultats: Dict[str, pd.DataFrame] = {}
-    found_any = False
-
-    for code in REQUETES_OBJECTIFS.keys():
-        path = os.path.join(
-            DOSSIER_MONGO_CSV,
-            f"resultat_req_{code.lower()}.csv",
-        )
-        if os.path.exists(path):
-            try:
-                resultats[code] = pd.read_csv(path)
-                found_any = True
-            except Exception:
-                resultats[code] = pd.DataFrame()
-
-    if found_any:
-        print("CSV MongoDB chargés ✅")
-    else:
-        print(" Non trouve")
-    print("\n")
-    return resultats, found_any
+    os.makedirs(DOSSIER_CSV, exist_ok=True)
+    print("💾 Sauvegarde CSV SQL sur disque...")
+    for code, df in resultats.items():
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        full_path = os.path.join(DOSSIER_CSV, nom_fichier)
+        try:
+            df.to_csv(full_path, index=False, encoding="utf-8-sig")
+        except Exception as e:
+            print(f"Erreur écriture {nom_fichier}: {e}")
+    print("✅ CSV SQL sauvegardés.")
 
 # =====================================================================
-# ETAT ET COMPOSANTS STREAMLIT
-# =====================================================================
-
-#            entre logique métier (ETL / requêtes) et présentation.
-
-
-# Création des dossiers nécessaires au démarrage de l'application.
-os.makedirs(DOSSIER_DATA, exist_ok=True)
-os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
-os.makedirs(DOSSIER_CSV, exist_ok=True)
-os.makedirs(DOSSIER_JSON, exist_ok=True)
-os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
-
-def init_session_state() -> None:
-    """
-    Initialise les variables de session Streamlit.
-    """
-    if st.session_state.get("initialized", False):
-        return
-
-    # --- AJOUT GESTION API KEY ---
-    # On charge la clé du .env par défaut dans la session
-    if "groq_api_key" not in st.session_state:
-        st.session_state["groq_api_key"] = os.getenv("GROQ_API_KEY", "")
-    # -----------------------------
-
-    st.session_state["requetes_objectifs"] = REQUETES_OBJECTIFS
-
-    resultats_sql, sql_cache_found = charger_cache_csv()
-    st.session_state["resultats_sql"] = resultats_sql
-    st.session_state["queries_sql_executed"] = sql_cache_found
-
-    resultats_mongo, mongo_cache_found = charger_cache_csv_mongo()
-    st.session_state["resultats_mongo"] = resultats_mongo
-    st.session_state["queries_mongo_executed"] = mongo_cache_found
-
-    st.session_state["migration_logs"] = []
-    st.session_state["migration_done_msg"] = ""
-    st.session_state["migration_running"] = False
-    
-    st.session_state["ai_json_response"] = None 
-    st.session_state["ai_question_text_value"] = ""
-
-    st.session_state["initialized"] = True
-
-# =====================================================================
-# Partie 1 : REQUÊTES SQLITE
-# =====================================================================
-
-def render_partie_1_sqlite(tab) -> None:
-    """
-    Affiche la Partie 1 : exécution et visualisation des requêtes SQLite.
-
-    Paramètres
-    ----------
-    tab :
-        Conteneur Streamlit (onglet) dans lequel les éléments sont rendus.
-    """
-    with tab:
-        st.subheader("Partie 1 : Requêtes SQLite")
-
-        status_text = (
-            "Données chargées."
-            if st.session_state["queries_sql_executed"]
-            else "Données non chargées."
-        )
-        st.write(status_text)
-
-        if st.button("Executer Requetes", key="btn_sql_run"):
-            with st.spinner("Exécution des requêtes SQLite..."):
-                res = executer_toutes_les_requetes()
-            st.session_state["resultats_sql"] = res
-            st.session_state["queries_sql_executed"] = True
-            st.success("✅ Requêtes terminées.")
-
-        st.markdown("---")
-
-        if not st.session_state["queries_sql_executed"]:
-            st.info(
-                "Les résultats ne sont pas encore disponibles. "
-                "Cliquez sur « Executer Requetes » pour lancer les requêtes.",
-            )
-            return
-
-        st.markdown("### Résultats détaillés des requêtes SQLite")
-
-        for code, objectif in st.session_state["requetes_objectifs"].items():
-            df = st.session_state["resultats_sql"].get(code)
-            with st.expander(
-                f"Requête {code} – {objectif}",
-                expanded=False,
-            ):
-                st.markdown(f"**Objectif :** {objectif}")
-                if df is None:
-                    st.warning("Aucun résultat pour cette requête.")
-                elif df.empty:
-                    st.info(
-                        "La requête n'a retourné aucun enregistrement.",
-                    )
-                else:
-                    st.dataframe(
-                        df.style.set_properties(
-                            **{"text-align": "left"},
-                        ),
-                        width="content",
-                    )
-
-# =====================================================================
-# Partie 2 : MIGRATION SQLITE -> MONGODB
-# =====================================================================
-# =====================================================================
-# VARIABLES GLOBALES ET FONCTION DE LOG (MANQUANTES)
-# =====================================================================
-
-MIGRATION_LOG_PLACEHOLDER: Optional[st.delta_generator.DeltaGenerator] = None
-MAX_LOG_LINES = 300
-
-def streamlit_migration_log(
-    message: str,
-    replace_last: bool = False,
-) -> None:
-    """
-    Fonction de log spécifique à la migration.
-    Utilise .code() au lieu de .text_area() pour éviter les crashs "Duplicate Key".
-    """
-    global MIGRATION_LOG_PLACEHOLDER
-
-    logs: List[str] = st.session_state.get("migration_logs", [])
-    
-    # Mise à jour de la liste des logs
-    if replace_last and logs:
-        logs[-1] = message
-    else:
-        logs.append(message)
-    
-    st.session_state["migration_logs"] = logs
-
-    # Mise à jour visuelle
-    if MIGRATION_LOG_PLACEHOLDER is not None:
-        display_lines = logs[-MAX_LOG_LINES:]
-        text_content = "\n".join(display_lines)
-        
-        # On utilise .code() ici : c'est fait pour du texte brut, ça scrolle,
-        # et surtout ça ne plante JAMAIS lors des mises à jour rapides.
-        MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
-
-def render_partie_2_migration(tab) -> None:
-    """
-    Affiche la Partie 2 : pilotage de la migration.
-    Cache les logs si vides, affiche en temps réel pendant l'exécution,
-    et affiche un récapitulatif stable à la fin.
-    """
-    global MIGRATION_LOG_PLACEHOLDER
-
-    with tab:
-        st.subheader("Partie 2 : Migration vers MongoDB")
-        st.caption("Cliquez pour migrer les données de SQLite vers MongoDB.")
-
-        def start_migration_callback() -> None:
-            st.session_state["migration_running"] = True
-            st.session_state["migration_logs"] = []
-            st.session_state["migration_done_msg"] = ""
-
-        col_btn, col_status = st.columns([1, 3], gap="small")
-
-        with col_btn:
-            st.button(
-                "Lancer Migration",
-                key="btn_migration",
-                width="content",
-                on_click=start_migration_callback,
-                disabled=st.session_state.get("migration_running", False),
-            )
-
-        # C'est ici que les logs s'afficheront
-        MIGRATION_LOG_PLACEHOLDER = st.empty()
-
-        # CAS 1 : Migration en cours (Animation temps réel)
-        if st.session_state.get("migration_running", False):
-            MIGRATION_LOG_PLACEHOLDER.code("Initialisation...", language="text")
-            
-            with col_status:
-                with st.spinner("Traitement en cours..."):
-                    # On lance la migration qui va appeler streamlit_migration_log
-                    migrer_sqlite_vers_mongo(log_fn_raw=streamlit_migration_log)
-
-            st.session_state["migration_done_msg"] = "Migration terminée avec succès !"
-            st.session_state["migration_running"] = False
-            
-            st.toast("Terminé !", icon="🎉")
-            time.sleep(1)
-            st.rerun()
-
-        # Message de succès (reste affiché après le rerun)
-        if st.session_state.get("migration_done_msg"):
-            with col_status:
-                st.success(st.session_state["migration_done_msg"])
-
-        # CAS 2 : Migration finie ou logs existants (Affichage statique)
-        # On n'affiche cette zone QUE s'il y a des logs (donc caché au démarrage)
-        logs: List[str] = st.session_state.get("migration_logs", [])
-        if logs and not st.session_state.get("migration_running", False):
-            log_text = "\n".join(logs[-MAX_LOG_LINES:])
-            
-            # Ici on peut utiliser text_area car c'est un affichage STATIQUE (une seule fois)
-            # Ça permet de scroller et copier le texte facilement.
-            MIGRATION_LOG_PLACEHOLDER.text_area(
-                "Journal de migration (Terminé)",
-                value=log_text,
-                height=400,
-                key="final_log_view"
-            )
-# =====================================================================
-# REQUETES MONGODB (PARTIE 3)
+# MONGO METIER : requêtes d'analyse sur le modèle document
 # =====================================================================
 
 def query_A_mongo(db) -> pd.DataFrame:
     """
-    Requête A (MongoDB).
-    SQL: nom_ligne, moyenne_retard_minutes
+    Requête A (MongoDB) :
+    Moyenne des retards par ligne (équivalent fonctionnel de la requête SQL A).
+
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - moyenne_retard_minutes
     """
     pipeline = [
         {"$unwind": "$trafic"},
@@ -1838,16 +1398,17 @@ def query_A_mongo(db) -> pd.DataFrame:
         },
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    # Force l'ordre des colonnes
     return df[["nom_ligne", "moyenne_retard_minutes"]] if not df.empty else df
 
-def query_B_mongo(db):
+
+def query_B_mongo(db) -> pd.DataFrame:
     """
-    Requête B en MongoDB :
-    Estimer le nombre moyen de passagers transportés par jour pour chaque ligne.
+    Requête B (MongoDB) :
+    Nombre moyen de passagers transportés par jour pour chaque ligne.
+
     Retourne un DataFrame avec :
-        - id_ligne
-        - moyenne_passagers_jour
+    - id_ligne
+    - moyenne_passagers_jour
     """
     pipeline = [
         {"$unwind": "$arrets"},
@@ -1860,39 +1421,44 @@ def query_B_mongo(db):
                     "$substrBytes": ["$arrets.horaires.heure_prevue", 0, 10]
                 },
                 "passagers_estimes": "$arrets.horaires.passagers_estimes",
-            }
+            },
         },
         {
             "$group": {
                 "_id": {"id_ligne": "$id_ligne", "jour": "$jour"},
                 "total_passagers_jour": {"$sum": "$passagers_estimes"},
-            }
+            },
         },
         {
             "$group": {
                 "_id": "$_id.id_ligne",
                 "moyenne_passagers_jour": {"$avg": "$total_passagers_jour"},
-            }
+            },
         },
         {
             "$project": {
                 "_id": 0,
                 "id_ligne": "$_id",
                 "moyenne_passagers_jour": 1,
-            }
+            },
         },
         {"$sort": {"moyenne_passagers_jour": -1}},
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
-    if df.empty:
-        return df
-    return df[["id_ligne", "moyenne_passagers_jour"]]
+    return df[["id_ligne", "moyenne_passagers_jour"]] if not df.empty else df
+
 
 def query_C_mongo(db) -> pd.DataFrame:
     """
-    Requête C (MongoDB).
-    SQL: nom_ligne, nb_trafic_avec_incident, nb_total_trafic, taux_incident_pourcent
+    Requête C (MongoDB) :
+    Taux d'incidents par ligne en pourcentage.
+
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - nb_trafic_avec_incident
+    - nb_total_trafic
+    - taux_incident_pourcent
     """
     pipeline = [
         {
@@ -1975,57 +1541,73 @@ def query_C_mongo(db) -> pd.DataFrame:
         },
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    cols = ["nom_ligne", "nb_trafic_avec_incident", "nb_total_trafic", "taux_incident_pourcent"]
+    cols = [
+        "nom_ligne",
+        "nb_trafic_avec_incident",
+        "nb_total_trafic",
+        "taux_incident_pourcent",
+    ]
     return df[cols] if not df.empty else df
+
 
 def query_D_mongo(db) -> pd.DataFrame:
     """
-    Requête D (MongoDB) - ULTRA OPTIMISÉE.
-    Utilise 'vehicules_cache' et 'co2_moyen_ligne'.
-    Complexité: O(L * V_per_line) au lieu de O(L * Arrets * Horaires).
+    Requête D (MongoDB) :
+    Moyenne de CO2 associée aux véhicules, en exploitant le modèle document.
+
+    Stratégie
+    ---------
+    - Utilisation de 'co2_moyen_ligne' (pré-calculée par ligne).
+    - Utilisation de 'vehicules_cache' pour associer chaque véhicule
+      à la moyenne CO2 de sa ligne.
+    - Évite un parcours coûteux des arrêts, capteurs et mesures.
+
+    Retourne un DataFrame avec :
+    - id_vehicule
+    - immatriculation
+    - moyenne_co2
     """
     pipeline = [
-        # 1. On ne prend que les lignes qui ont une moyenne CO2 et des véhicules
         {
             "$match": {
                 "co2_moyen_ligne": {"$exists": True, "$ne": None},
-                "vehicules_cache": {"$exists": True, "$ne": []}
-            }
+                "vehicules_cache": {"$exists": True, "$ne": []},
+            },
         },
-        # 2. On garde juste ce dont on a besoin
         {
             "$project": {
                 "vehicules_cache": 1,
-                "co2_moyen_ligne": 1
-            }
+                "co2_moyen_ligne": 1,
+            },
         },
-        # 3. On "sort" les véhicules de leur tableau
         {"$unwind": "$vehicules_cache"},
-        
-        # 4. Projection finale : le véhicule hérite du CO2 de sa ligne
         {
             "$project": {
                 "_id": 0,
                 "id_vehicule": "$vehicules_cache.id_vehicule",
                 "immatriculation": "$vehicules_cache.immatriculation",
-                "moyenne_co2": "$co2_moyen_ligne"
-            }
+                "moyenne_co2": "$co2_moyen_ligne",
+            },
         },
-        # 5. Tri
-        {"$sort": {"moyenne_co2": -1}}
+        {"$sort": {"moyenne_co2": -1}},
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
-    
     if df.empty:
-        return pd.DataFrame(columns=["id_vehicule", "immatriculation", "moyenne_co2"])
-        
+        return pd.DataFrame(
+            columns=["id_vehicule", "immatriculation", "moyenne_co2"],
+        )
     return df[["id_vehicule", "immatriculation", "moyenne_co2"]]
+
 
 def query_E_mongo(db) -> pd.DataFrame:
     """
-    Requête E (MongoDB).
-    SQL: nom, moyenne_bruit_db
+    Requête E (MongoDB) :
+    Quartiers les plus bruyants selon les capteurs de type 'Bruit'.
+
+    Retourne un DataFrame avec :
+    - nom (quartier)
+    - moyenne_bruit_db
     """
     pipeline = [
         {
@@ -2061,8 +1643,11 @@ def query_E_mongo(db) -> pd.DataFrame:
 
 def query_F_mongo(db) -> pd.DataFrame:
     """
-    Requête F (MongoDB).
-    SQL: nom_ligne (DISTINCT)
+    Requête F (MongoDB) :
+    Lignes ayant connu des retards > 10 minutes mais aucun incident.
+
+    Retourne un DataFrame avec :
+    - nom_ligne
     """
     pipeline = [
         {
@@ -2098,8 +1683,8 @@ def query_F_mongo(db) -> pd.DataFrame:
                                                     "$ifNull": [
                                                         "$$t.incidents",
                                                         [],
-                                                    ]
-                                                }
+                                                    ],
+                                                },
                                             },
                                             0,
                                         ],
@@ -2131,8 +1716,13 @@ def query_F_mongo(db) -> pd.DataFrame:
 
 def query_G_mongo(db) -> pd.DataFrame:
     """
-    Requête G (MongoDB).
-    SQL: total_trajets, trajets_sans_retard, taux_ponctualite_global_pourcent
+    Requête G (MongoDB) :
+    Taux global de ponctualité (trajets sans retard / total des trajets).
+
+    Retourne un DataFrame avec :
+    - total_trajets
+    - trajets_sans_retard
+    - taux_ponctualite_global_pourcent
     """
     pipeline = [
         {"$unwind": "$trafic"},
@@ -2178,14 +1768,22 @@ def query_G_mongo(db) -> pd.DataFrame:
         },
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    cols = ["total_trajets", "trajets_sans_retard", "taux_ponctualite_global_pourcent"]
+    cols = [
+        "total_trajets",
+        "trajets_sans_retard",
+        "taux_ponctualite_global_pourcent",
+    ]
     return df[cols] if not df.empty else df
 
 
 def query_H_mongo(db) -> pd.DataFrame:
     """
-    Requête H (MongoDB).
-    SQL: nom, nombre_arrets
+    Requête H (MongoDB) :
+    Nombre d'arrêts par quartier.
+
+    Retourne un DataFrame avec :
+    - nom (quartier)
+    - nombre_arrets
     """
     pipeline = [
         {
@@ -2208,8 +1806,13 @@ def query_H_mongo(db) -> pd.DataFrame:
 
 def query_I_mongo(db) -> pd.DataFrame:
     """
-    Requête I (MongoDB).
-    SQL: nom_ligne, moyenne_retard, moyenne_co2
+    Requête I (MongoDB) :
+    Corrélation entre moyenne des retards et moyenne de CO2 par ligne.
+
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - moyenne_retard
+    - moyenne_co2
     """
     pipeline = [
         {
@@ -2254,13 +1857,13 @@ def query_I_mongo(db) -> pd.DataFrame:
                                                     "$ifNull": [
                                                         "$$this.mesures",
                                                         [],
-                                                    ]
+                                                    ],
                                                 },
                                                 "as": "m",
                                                 "in": "$$m.valeur",
-                                            }
+                                            },
                                         },
-                                    ]
+                                    ],
                                 },
                                 "$$value",
                             ],
@@ -2296,8 +1899,12 @@ def query_I_mongo(db) -> pd.DataFrame:
 
 def query_J_mongo(db) -> pd.DataFrame:
     """
-    Requête J (MongoDB).
-    SQL: nom_ligne, moyenne_temperature
+    Requête J (MongoDB) :
+    Température moyenne mesurée par ligne.
+
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - moyenne_temperature
     """
     pipeline = [
         {"$match": {"type_capteur": "Temperature"}},
@@ -2329,84 +1936,82 @@ def query_J_mongo(db) -> pd.DataFrame:
     df = aggregate_to_df(db.capteurs, pipeline)
     return df[["nom_ligne", "moyenne_temperature"]] if not df.empty else df
 
+
 def query_K_mongo(db) -> pd.DataFrame:
     """
-    Requête K (MongoDB) - ULTRA OPTIMISÉE.
-    Utilise 'chauffeurs_cache' et 'stats_trafic' (pré-calculé).
-    Évite totalement de lire le tableau 'trafic'.
+    Requête K (MongoDB) :
+    Moyenne des retards par chauffeur.
+
+    Stratégie
+    ---------
+    - Exploite 'stats_trafic' (total_retard, nb_trajets) pré-calculés par ligne.
+    - Exploite 'chauffeurs_cache' pour associer chaque chauffeur aux lignes.
+    - Agrège les statistiques sur l'ensemble des lignes d'un même chauffeur.
+
+    Retourne un DataFrame avec :
+    - nom (chauffeur)
+    - moyenne_retard_minutes
     """
     pipeline = [
-        # 1. Filtre : Lignes avec chauffeurs et stats trafic existantes
-        { 
-            "$match": { 
-                "stats_trafic": { "$exists": True },
-                "chauffeurs_cache": { "$exists": True, "$ne": [] }
-            } 
+        {
+            "$match": {
+                "stats_trafic": {"$exists": True},
+                "chauffeurs_cache": {"$exists": True, "$ne": []},
+            },
         },
-
-        # 2. Projection légère
-        { 
+        {
             "$project": {
                 "chauffeurs_cache": 1,
                 "total_retard": "$stats_trafic.total_retard",
-                "nb_trajets": "$stats_trafic.nb_trajets"
-            }
+                "nb_trajets": "$stats_trafic.nb_trajets",
+            },
         },
-
-        # 3. On déroule la liste des chauffeurs (liste très courte)
-        { "$unwind": "$chauffeurs_cache" },
-
-        # 4. Groupement par chauffeur 
-        # (Si un chauffeur est sur 2 lignes, on additionne les stats pré-calculées)
-        { 
+        {"$unwind": "$chauffeurs_cache"},
+        {
             "$group": {
                 "_id": "$chauffeurs_cache.nom_chauffeur",
-                "cumul_retard": { "$sum": "$total_retard" },
-                "cumul_trajets": { "$sum": "$nb_trajets" }
-            }
+                "cumul_retard": {"$sum": "$total_retard"},
+                "cumul_trajets": {"$sum": "$nb_trajets"},
+            },
         },
-
-        # 5. Calcul final de la moyenne
-        { 
+        {
             "$project": {
                 "_id": 0,
                 "nom": "$_id",
-                "moyenne_retard_minutes": { 
+                "moyenne_retard_minutes": {
                     "$cond": [
-                        { "$eq": ["$cumul_trajets", 0] },
+                        {"$eq": ["$cumul_trajets", 0]},
                         0,
-                        { "$divide": ["$cumul_retard", "$cumul_trajets"] }
-                    ]
-                }
-            }
+                        {"$divide": ["$cumul_retard", "$cumul_trajets"]},
+                    ],
+                },
+            },
         },
-
-        # 6. Tri
-        { "$sort": { "moyenne_retard_minutes": -1 } }
+        {"$sort": {"moyenne_retard_minutes": -1}},
     ]
 
     df = aggregate_to_df(db.lignes, pipeline)
     return df[["nom", "moyenne_retard_minutes"]] if not df.empty else df
 
+
 def query_L_mongo(db) -> pd.DataFrame:
     """
-    Requête L (MongoDB) - alignée sur la requête SQL.
+    Requête L (MongoDB) :
+    Pour les lignes de type 'Bus', calcul du pourcentage de véhicules électriques.
 
-    SQL : on compte les véhicules par ligne à partir de la table Vehicule :
-        - total_vehicules = COUNT(V.id_vehicule)
-        - nb_electriques = COUNT(...) où type_vehicule = 'Electrique'
-
-    Mongo : on utilise le cache 'vehicules_cache' construit depuis Vehicule.
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - total_vehicules
+    - nb_electriques
+    - pourcentage_electrique
     """
     pipeline = [
-        # On ne garde que les Bus avec un cache de véhicules non vide
         {
             "$match": {
                 "type": "Bus",
                 "vehicules_cache": {"$exists": True, "$ne": []},
-            }
+            },
         },
-        # On déroule la liste des véhicules issus directement de la table Vehicule
         {"$unwind": "$vehicules_cache"},
         {
             "$group": {
@@ -2418,10 +2023,10 @@ def query_L_mongo(db) -> pd.DataFrame:
                             {"$eq": ["$vehicules_cache.type_vehicule", "Electrique"]},
                             1,
                             0,
-                        ]
-                    }
+                        ],
+                    },
                 },
-            }
+            },
         },
         {
             "$addFields": {
@@ -2435,14 +2040,14 @@ def query_L_mongo(db) -> pd.DataFrame:
                                     "$divide": [
                                         "$nb_electriques",
                                         "$total_vehicules",
-                                    ]
+                                    ],
                                 },
                                 100,
-                            ]
+                            ],
                         },
-                    ]
-                }
-            }
+                    ],
+                },
+            },
         },
         {"$sort": {"pourcentage_electrique": -1}},
         {
@@ -2452,7 +2057,7 @@ def query_L_mongo(db) -> pd.DataFrame:
                 "total_vehicules": 1,
                 "nb_electriques": 1,
                 "pourcentage_electrique": 1,
-            }
+            },
         },
     ]
 
@@ -2464,18 +2069,30 @@ def query_L_mongo(db) -> pd.DataFrame:
                 "total_vehicules",
                 "nb_electriques",
                 "pourcentage_electrique",
-            ]
+            ],
         )
 
     df = pd.DataFrame(docs)
-    cols = ["nom_ligne", "total_vehicules", "nb_electriques", "pourcentage_electrique"]
+    cols = [
+        "nom_ligne",
+        "total_vehicules",
+        "nb_electriques",
+        "pourcentage_electrique",
+    ]
     return df[cols]
 
 
 def query_M_mongo(db) -> pd.DataFrame:
     """
-    Requête M (MongoDB).
-    SQL: id_capteur, latitude, longitude, moyenne_co2, niveau_pollution
+    Requête M (MongoDB) :
+    Classification des capteurs CO2 par niveau de pollution.
+
+    Retourne un DataFrame avec :
+    - id_capteur
+    - latitude
+    - longitude
+    - moyenne_co2
+    - niveau_pollution
     """
     pipeline = [
         {"$match": {"type_capteur": "CO2"}},
@@ -2521,14 +2138,26 @@ def query_M_mongo(db) -> pd.DataFrame:
         },
     ]
     df = aggregate_to_df(db.capteurs, pipeline)
-    cols = ["id_capteur", "latitude", "longitude", "moyenne_co2", "niveau_pollution"]
+    cols = [
+        "id_capteur",
+        "latitude",
+        "longitude",
+        "moyenne_co2",
+        "niveau_pollution",
+    ]
     return df[cols] if not df.empty else df
 
 
 def query_N_mongo(db) -> pd.DataFrame:
     """
-    Requête N (MongoDB).
-    SQL: nom_ligne, type, frequentation_moyenne, categorie_frequentation
+    Requête N (MongoDB) :
+    Catégorisation des lignes par niveau de fréquentation.
+
+    Retourne un DataFrame avec :
+    - nom_ligne
+    - type
+    - frequentation_moyenne
+    - categorie_frequentation
     """
     pipeline = [
         {
@@ -2572,8 +2201,14 @@ def query_N_mongo(db) -> pd.DataFrame:
         },
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    cols = ["nom_ligne", "type", "frequentation_moyenne", "categorie_frequentation"]
+    cols = [
+        "nom_ligne",
+        "type",
+        "frequentation_moyenne",
+        "categorie_frequentation",
+    ]
     return df[cols] if not df.empty else df
+
 
 QUERY_MONGO_FUNCS: Dict[str, Callable] = {
     "A": query_A_mongo,
@@ -2592,52 +2227,33 @@ QUERY_MONGO_FUNCS: Dict[str, Callable] = {
     "N": query_N_mongo,
 }
 
-
+@st.cache_data(show_spinner=False)
 def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
     """
-    Exécute les requêtes A -> N sur la base MongoDB Paris2055 et
-    sauvegarde les résultats au format CSV.
-
-    Retour
-    ------
-    dict[str, pandas.DataFrame]
-        Dictionnaire associant le code de requête à son DataFrame
-        résultat. En cas d'erreur globale de connexion, toutes les
-        entrées contiendront un DataFrame avec une colonne 'erreur'.
+    Exécute toutes les requêtes MongoDB métier (A → N).
+    UTILISE LE CACHE STREAMLIT.
     """
     client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     resultats: Dict[str, pd.DataFrame] = {}
 
     try:
         client.admin.command("ping")
-
         if MONGO_DB_NAME not in client.list_database_names():
-            error_msg = (
-                f"La base '{MONGO_DB_NAME}' n'existe pas. "
-                "Lancez la migration (Partie 2)."
-            )
-            error_df = pd.DataFrame([{"erreur": error_msg}])
+            error_df = pd.DataFrame([{"erreur": f"Base '{MONGO_DB_NAME}' inexistante."}])
+            # On retourne une erreur pour toutes les clés pour éviter des plantages UI
             return {code: error_df for code in QUERY_MONGO_FUNCS.keys()}
 
         db = client[MONGO_DB_NAME]
         for code, func in QUERY_MONGO_FUNCS.items():
             try:
+                # Calcul seulement
                 df = func(db)
             except Exception as exc:
-                df = pd.DataFrame(
-                    [{"erreur": f"Erreur requête: {str(exc)}"}],
-                )
-
-            enregistrer_resultats_csv(
-                DOSSIER_MONGO_CSV,
-                f"resultat_req_{code.lower()}.csv",
-                df,
-            )
+                df = pd.DataFrame([{"erreur": f"Erreur requête: {str(exc)}"}])
             resultats[code] = df
 
     except Exception as exc:
         err_msg = f"Impossible de se connecter à MongoDB : {str(exc)}"
-        print(f"[ERREUR] {err_msg}")
         error_df = pd.DataFrame([{"erreur": err_msg}])
         return {code: error_df for code in QUERY_MONGO_FUNCS.keys()}
     finally:
@@ -2645,100 +2261,356 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
 
     return resultats
 
-def render_partie_3_mongo(tab) -> None:
+def tenter_chargement_depuis_csv(dossier_cible: str) -> Dict[str, pd.DataFrame]:
     """
-    Affiche la Partie 3 : exécution et visualisation des requêtes MongoDB.
+    Tente de recharger les DataFrames depuis les CSV existants sur le disque
+    pour restaurer l'état de l'application au démarrage.
+    """
+    resultats_charges = {}
+    # On parcourt les codes A, B, C... définis dans les objectifs
+    for code in REQUETES_OBJECTIFS.keys():
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        chemin_complet = os.path.join(dossier_cible, nom_fichier)
+        
+        if os.path.exists(chemin_complet):
+            try:
+                # On charge le CSV
+                df = pd.read_csv(chemin_complet)
+                resultats_charges[code] = df
+            except Exception:
+                # Si un fichier est corrompu, on l'ignore
+                pass
+    
+    return resultats_charges
+
+def forcer_ecriture_csv_mongo(resultats: Dict[str, pd.DataFrame]) -> None:
+    """
+    Fonction NON CACHÉE : Écrit les résultats Mongo sur le disque.
+    """
+    os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
+    print("💾 Sauvegarde CSV MongoDB sur disque...")
+    for code, df in resultats.items():
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        full_path = os.path.join(DOSSIER_MONGO_CSV, nom_fichier)
+        try:
+            df.to_csv(full_path, index=False, encoding="utf-8-sig")
+        except Exception as e:
+            print(f"Erreur écriture {nom_fichier}: {e}")
+    print("✅ CSV MongoDB sauvegardés.")
+
+def check_connexion_details() -> tuple[bool, bool]:
+    """
+    Vérifie la disponibilité du serveur MongoDB et l'existence de la base Paris2055.
+
+    Retour
+    ------
+    (bool, bool)
+        - premier booléen : True si le serveur MongoDB répond au ping.
+        - second booléen : True si la base MONGO_DB_NAME est présente sur le serveur.
+    """
+    client: Optional[pymongo.MongoClient] = None
+    server_ok = False
+    db_ok = False
+
+    try:
+        client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        client.admin.command("ping")
+        server_ok = True
+
+        if MONGO_DB_NAME in client.list_database_names():
+            db_ok = True
+    except Exception:
+        server_ok = False
+        db_ok = False
+    finally:
+        if client is not None:
+            client.close()
+
+    return server_ok, db_ok
+
+# =====================================================================
+# ÉTAT GLOBAL STREAMLIT : DOSSIERS ET SESSION
+# =====================================================================
+
+# Création des répertoires nécessaires pour stocker la base SQLite,
+# les exports CSV et les collections JSON.
+os.makedirs(DOSSIER_DATA, exist_ok=True)
+os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+os.makedirs(DOSSIER_CSV, exist_ok=True)
+os.makedirs(DOSSIER_JSON, exist_ok=True)
+os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
+
+def init_session_state() -> None:
+    """
+    Initialise les variables de session.
+    Vérifie la présence de CSV sur le disque pour recharger l'état automatiquement.
+    """
+    if st.session_state.get("initialized", False):
+        return
+
+    if "groq_api_key" not in st.session_state:
+        st.session_state["groq_api_key"] = os.getenv("GROQ_API_KEY", "")
+
+    st.session_state["requetes_objectifs"] = REQUETES_OBJECTIFS
+
+    # --- CHARGEMENT AUTOMATIQUE SQL ---
+    if "resultats_sql" not in st.session_state:
+        # On tente de charger depuis le disque
+        data_sql = tenter_chargement_depuis_csv(DOSSIER_CSV)
+        if data_sql:
+            st.session_state["resultats_sql"] = data_sql
+            st.session_state["queries_sql_executed"] = True
+            print("✅ Session SQL restaurée depuis les CSV.")
+        else:
+            st.session_state["resultats_sql"] = {}
+            st.session_state["queries_sql_executed"] = False
+
+    # --- CHARGEMENT AUTOMATIQUE MONGO ---
+    if "resultats_mongo" not in st.session_state:
+        # On tente de charger depuis le disque
+        data_mongo = tenter_chargement_depuis_csv(DOSSIER_MONGO_CSV)
+        if data_mongo:
+            st.session_state["resultats_mongo"] = data_mongo
+            st.session_state["queries_mongo_executed"] = True
+            print("✅ Session MongoDB restaurée depuis les CSV.")
+        else:
+            st.session_state["resultats_mongo"] = {}
+            st.session_state["queries_mongo_executed"] = False
+
+    # Autres états
+    st.session_state["migration_logs"] = []
+    st.session_state["migration_done_msg"] = ""
+    st.session_state["migration_running"] = False
+    st.session_state["ai_json_response"] = None
+    st.session_state["ai_question_text_value"] = ""
+
+    st.session_state["initialized"] = True
+
+# =====================================================================
+# LOGS MIGRATION (PARTIE 2) : STOCKAGE ET AFFICHAGE
+# =====================================================================
+
+MIGRATION_LOG_PLACEHOLDER: Optional[st.delta_generator.DeltaGenerator] = None
+MAX_LOG_LINES = 300
+
+
+def streamlit_migration_log(message: str, replace_last: bool = False) -> None:
+    """
+    Ajoute une entrée de log dans l'historique de migration et met à jour
+    l'affichage Streamlit associé.
 
     Paramètres
     ----------
-    tab :
-        Conteneur Streamlit (onglet) dans lequel les éléments sont rendus.
+    message : str
+        Ligne de log à ajouter ou à remplacer.
+    replace_last : bool
+        Si True, remplace la dernière ligne du log par ce message.
+        Sinon, ajoute une nouvelle ligne à la fin.
     """
+    global MIGRATION_LOG_PLACEHOLDER
+
+    logs: List[str] = st.session_state.get("migration_logs", [])
+
+    # Mise à jour de la liste en mémoire
+    if replace_last and logs:
+        logs[-1] = message
+    else:
+        logs.append(message)
+
+    st.session_state["migration_logs"] = logs
+
+    # Mise à jour de la zone de log en temps réel (mode "code" pour éviter les erreurs)
+    if MIGRATION_LOG_PLACEHOLDER is not None:
+        display_lines = logs[-MAX_LOG_LINES:]
+        text_content = "\n".join(display_lines)
+        MIGRATION_LOG_PLACEHOLDER.code(text_content, language="text")
+
+
+# =====================================================================
+# PARTIE 1 : INTERFACE REQUÊTES SQLITE
+# =====================================================================
+def render_partie_1_sqlite(tab) -> None:
+    with tab:
+        st.subheader("Partie 1 : Requêtes SQLite")
+
+        status_text = "Données chargées." if st.session_state["queries_sql_executed"] else "Données non chargées."
+        st.write(status_text)
+
+        # Modification ici : Calcul + Sauvegarde
+        if st.button("Executer & Sauvegarder CSV", key="btn_sql_run"):
+            with st.spinner("Traitement en cours (Cache + Disque)..."):
+                # 1. Récupération rapide (ou calcul)
+                res = executer_toutes_les_requetes()
+                
+                # 2. Écriture forcée sur le disque
+                forcer_ecriture_csv_sql(res)
+                
+                st.session_state["resultats_sql"] = res
+                st.session_state["queries_sql_executed"] = True
+                st.success("✅ Calculs terminés et CSV mis à jour sur le disque.")
+
+        st.markdown("---")
+
+        if not st.session_state["queries_sql_executed"]:
+            st.info("Cliquez sur le bouton pour lancer les requêtes.")
+            return
+
+        st.markdown("### Résultats détaillés des requêtes SQLite")
+        for code, objectif in st.session_state["requetes_objectifs"].items():
+            df = st.session_state["resultats_sql"].get(code)
+            with st.expander(f"Requête {code} – {objectif}", expanded=False):
+                st.markdown(f"**Objectif :** {objectif}")
+                if df is None:
+                    st.warning("Aucun résultat.")
+                elif df.empty:
+                    st.info("Résultat vide.")
+                else:
+                    # --- CORRECTION ICI ---
+                    st.dataframe(
+                        df.style.set_properties(**{"text-align": "left"}), 
+                        width="stretch"  # Remplace use_container_width=True
+                    )
+
+# =====================================================================
+# PARTIE 2 : INTERFACE MIGRATION SQLITE → MONGODB
+# =====================================================================
+
+def render_partie_2_migration(tab) -> None:
+    """
+    Rend l'onglet 'Partie 2 : Migration vers MongoDB'.
+
+    Cet onglet permet :
+    - de déclencher la migration SQLite → modèle document → MongoDB ;
+    - de suivre en temps réel un journal d'exécution (logs) ;
+    - de consulter, après coup, le journal complet de la dernière migration.
+    """
+    global MIGRATION_LOG_PLACEHOLDER
+
+    with tab:
+        st.subheader("Partie 2 : Migration vers MongoDB")
+        st.caption("Cliquez pour migrer les données de SQLite vers MongoDB.")
+
+        def start_migration_callback() -> None:
+            """
+            Prépare l'état de session avant de lancer une nouvelle migration :
+            - indique que la migration est en cours ;
+            - vide le journal de logs ;
+            - efface le message de fin précédent.
+            """
+            st.session_state["migration_running"] = True
+            st.session_state["migration_logs"] = []
+            st.session_state["migration_done_msg"] = ""
+
+        col_btn, col_status = st.columns([1, 3], gap="small")
+
+        # Bouton principal de lancement de la migration
+        with col_btn:
+            st.button(
+                "Lancer Migration",
+                key="btn_migration",
+                width="content",
+                on_click=start_migration_callback,
+                disabled=st.session_state.get("migration_running", False),
+            )
+
+        # Zone dynamique où s'affichent les logs en temps réel ou en mode "historique"
+        MIGRATION_LOG_PLACEHOLDER = st.empty()
+
+        # Cas 1 : migration en cours, logs mis à jour en temps réel
+        if st.session_state.get("migration_running", False):
+            MIGRATION_LOG_PLACEHOLDER.code("Initialisation...", language="text")
+
+            with col_status:
+                with st.spinner("Traitement en cours..."):
+                    migrer_sqlite_vers_mongo(log_fn_raw=streamlit_migration_log)
+
+            st.session_state["migration_done_msg"] = "Migration terminée avec succès !"
+            st.session_state["migration_running"] = False
+
+            st.toast("Terminé !", icon="🎉")
+            time.sleep(1)
+            st.rerun()
+
+        # Message de succès persistant après la fin de la migration
+        if st.session_state.get("migration_done_msg"):
+            with col_status:
+                st.success(st.session_state["migration_done_msg"])
+
+        # Cas 2 : migration terminée ou logs existants, affichage statique du journal
+        logs: List[str] = st.session_state.get("migration_logs", [])
+        if logs and not st.session_state.get("migration_running", False):
+            log_text = "\n".join(logs[-MAX_LOG_LINES:])
+            MIGRATION_LOG_PLACEHOLDER.text_area(
+                "Journal de migration (Terminé)",
+                value=log_text,
+                height=400,
+                key="final_log_view",
+            )
+
+
+# =====================================================================
+# PARTIE 3 : INTERFACE REQUÊTES MONGODB
+# =====================================================================
+def render_partie_3_mongo(tab) -> None:
     with tab:
         st.subheader("Partie 3 : Requêtes MongoDB")
 
         server_ok, db_ok = check_connexion_details()
 
         if not server_ok:
-            st.error(
-                f"❌ Impossible de se connecter au serveur MongoDB sur {MONGO_URI}",
-            )
+            st.error(f"❌ Impossible de se connecter au serveur MongoDB sur {MONGO_URI}")
         elif not db_ok:
-            st.warning(
-                f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore. "
-                "Lancez la migration en Partie 2.",
-            )
+            st.warning(f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore. Lancez la migration en Partie 2.")
         else:
-            st.success(
-                f"✅ Serveur connecté et base '{MONGO_DB_NAME}' détectée.",
-            )
+            st.success(f"✅ Serveur connecté et base '{MONGO_DB_NAME}' détectée.")
 
         st.markdown("---")
-
-        mongo_queries_executed = st.session_state.get(
-            "queries_mongo_executed",
-            False,
-        )
-        resultats_mongo: Dict[str, pd.DataFrame] = st.session_state.get(
-            "resultats_mongo",
-            {},
-        )
-
+        
         btn_disabled = not (server_ok and db_ok)
 
-        if st.button(
-            "Executer Requetes MongoDB",
-            key="btn_mongo_run",
-            disabled=btn_disabled,
-        ):
-            with st.spinner("Exécution des requêtes MongoDB..."):
-                resultats_mongo = executer_toutes_les_requetes_mongo()
-            st.session_state["resultats_mongo"] = resultats_mongo
-            st.session_state["queries_mongo_executed"] = True
-            mongo_queries_executed = True
-            st.success("✅ Requêtes MongoDB terminées.")
+        # Modification ici : Calcul + Sauvegarde
+        if st.button("Executer & Sauvegarder CSV Mongo", key="btn_mongo_run", disabled=btn_disabled):
+            with st.spinner("Traitement en cours (Cache + Disque)..."):
+                # 1. Récupération rapide
+                res = executer_toutes_les_requetes_mongo()
+                
+                # 2. Écriture forcée sur disque
+                forcer_ecriture_csv_mongo(res)
+                
+                st.session_state["resultats_mongo"] = res
+                st.session_state["queries_mongo_executed"] = True
+                st.success("✅ Requêtes MongoDB terminées et CSV sauvegardés.")
 
-        if not mongo_queries_executed:
-            st.info(
-                "Clique sur « Executer Requetes MongoDB » "
-                "pour lancer les requêtes.",
-            )
+        if not st.session_state.get("queries_mongo_executed"):
+            st.info("Cliquez sur le bouton pour lancer les requêtes.")
             return
 
         st.markdown("### Résultats détaillés des requêtes MongoDB")
-
         for code, objectif in st.session_state["requetes_objectifs"].items():
-            df = resultats_mongo.get(code)
-            with st.expander(
-                f"Requête {code} – {objectif}",
-                expanded=False,
-            ):
+            df = st.session_state["resultats_mongo"].get(code)
+            with st.expander(f"Requête {code} – {objectif}", expanded=False):
                 st.markdown(f"**Objectif :** {objectif}")
                 if df is None:
-                    st.warning("Aucun résultat pour cette requête.")
+                    st.warning("Aucun résultat.")
                 elif df.empty:
-                    st.info(
-                        "La requête n'a retourné aucun enregistrement.",
-                    )
+                    st.info("Résultat vide.")
                 else:
+                    # --- CORRECTION ICI ---
                     st.dataframe(
-                        df.style.set_properties(
-                            **{"text-align": "left"},
-                        ),
-                        width="content",
+                        df.style.set_properties(**{"text-align": "left"}), 
+                        width="stretch"  # Remplace use_container_width=True
                     )
 # =====================================================================
-# Partie 4 : DASHBOARDS ET CARTOGRAPHIE
+# PARTIE 4 : TABLEAU DE BORD / CARTOGRAPHIE (PLACEHOLDER)
 # =====================================================================
 
 def render_partie_4_streamlit(tab) -> None:
     """
-    Affiche la Partie 4 : espace réservé pour des dashboards et cartes.
+    Rend l'onglet 'Partie 4 : Tableau de bord et cartographie'.
 
-    Paramètres
-    ----------
-    tab :
-        Conteneur Streamlit (onglet) dans lequel les éléments sont rendus.
+    Cet onglet est un espace réservé pour des visualisations avancées
+    (cartes, graphiques, indicateurs métiers) construites à partir des
+    données SQL ou MongoDB.
     """
     with tab:
         st.subheader("Partie 4 : Tableau de bord et cartographie")
@@ -2748,68 +2620,93 @@ def render_partie_4_streamlit(tab) -> None:
             "(cartes, dashboards, etc.).",
         )
 
+
 # =====================================================================
-# Partie 5 : COMPARAISON SQL vs MONGODB
+# PARTIE 5 : COMPARAISON SQL vs MONGODB
 # =====================================================================
 
-def comparer_dataframes_souple(df1: pd.DataFrame, df2: pd.DataFrame) -> tuple[str, str]:
+def comparer_dataframes_souple(
+    df1: pd.DataFrame,
+    df2: pd.DataFrame,
+) -> tuple[str, str]:
     """
-    Compare deux DataFrames de manière souple pour valider la migration.
-    
-    Retourne:
-    - Un statut (icône).
-    - Un message explicatif.
+    Compare deux DataFrames de manière tolérante afin d'évaluer la
+    cohérence entre résultats SQL et MongoDB.
+
+    La comparaison se fait en plusieurs étapes :
+    - vérification de présence (aucun / un seul / les deux) ;
+    - comparaison du nombre de lignes ;
+    - comparaison du nombre de colonnes ;
+    - tentative de comparaison des valeurs avec tolérance sur les types
+      et les arrondis numériques.
+
+    Retour
+    ------
+    (str, str)
+        - icône de statut ("✅", "⚠️", "❌") ;
+        - message explicatif en français.
     """
     if df1 is None or df2 is None:
         return "❌", "Un des résultats est manquant."
-    
+
     if df1.empty and df2.empty:
         return "✅", "Les deux résultats sont vides (cohérent)."
-        
+
     if df1.empty or df2.empty:
         return "❌", f"Disparité : SQL a {len(df1)} lignes, Mongo a {len(df2)} lignes."
 
-    # 1. Comparaison du nombre de lignes
+    # 1. Nombre de lignes
     if len(df1) != len(df2):
         diff = abs(len(df1) - len(df2))
-        return "⚠️", f"Différence de taille : {len(df1)} (SQL) vs {len(df2)} (Mongo). Écart : {diff}."
+        return "⚠️", (
+            f"Différence de taille : {len(df1)} (SQL) vs {len(df2)} (Mongo). "
+            f"Écart : {diff}."
+        )
 
-    # 2. Comparaison du nombre de colonnes
+    # 2. Nombre de colonnes
     if len(df1.columns) != len(df2.columns):
-        return "⚠️", f"Colonnes différentes : {list(df1.columns)} vs {list(df2.columns)}."
+        return "⚠️", (
+            f"Colonnes différentes : {list(df1.columns)} "
+            f"vs {list(df2.columns)}."
+        )
 
-    # 3. Tentative de comparaison stricte des valeurs (avec tolérance pour les arrondis)
+    # 3. Comparaison détaillée des valeurs avec tolérance sur les types et les arrondis
     try:
-        # On trie les données pour s'assurer qu'elles sont dans le même ordre
-        # On suppose que la première colonne est la clé de tri (ex: nom_ligne)
         col_sort_1 = df1.columns[0]
         col_sort_2 = df2.columns[0]
-        
+
         df1_sorted = df1.sort_values(by=col_sort_1).reset_index(drop=True)
         df2_sorted = df2.sort_values(by=col_sort_2).reset_index(drop=True)
 
-        # On normalise les noms de colonnes pour la comparaison (ignorer casse)
         df1_sorted.columns = [c.lower() for c in df1_sorted.columns]
         df2_sorted.columns = [c.lower() for c in df2_sorted.columns]
 
         pd.testing.assert_frame_equal(
-            df1_sorted, 
-            df2_sorted, 
-            check_dtype=False, # Ignore int vs float
-            check_exact=False, # Tolère les erreurs d'arrondi minimes
-            rtol=1e-3 # Tolérance relative de 0.1%
+            df1_sorted,
+            df2_sorted,
+            check_dtype=False,
+            check_exact=False,
+            rtol=1e-3,
         )
         return "✅", "Contenu identique (valeurs et dimensions)."
-    except AssertionError as e:
-        # Si c'est juste une histoire de noms de colonnes ou de types, on considère que c'est acceptable
-        return "⚠️", "Dimensions OK, mais valeurs légèrement différentes (arrondis ou types)."
-    except Exception as e:
-        return "❌", f"Erreur lors de la comparaison : {str(e)}"
+    except AssertionError:
+        return (
+            "⚠️",
+            "Dimensions identiques, mais certaines valeurs diffèrent "
+            "(arrondis, ordre ou types).",
+        )
+    except Exception as exc:
+        return "❌", f"Erreur lors de la comparaison : {str(exc)}"
 
 
 def render_partie_5_comparaison(tab) -> None:
     """
-    Affiche la Partie 5 : Comparaison côte à côte des résultats SQL et MongoDB.
+    Rend l'onglet 'Partie 5 : Validation de la Migration (SQL vs NoSQL)'.
+
+    Cet onglet affiche, pour chaque requête A → N :
+    - un statut de comparaison (identique / approximatif / incohérent) ;
+    - les résultats SQL et MongoDB côte à côte ;
+    - un score global de validation de la migration.
     """
     with tab:
         st.subheader("Partie 5 : Validation de la Migration (SQL vs NoSQL)")
@@ -2818,12 +2715,14 @@ def render_partie_5_comparaison(tab) -> None:
             "bien les mêmes données métier que les requêtes SQL d'origine."
         )
 
-        # Vérification que les caches sont chargés
         sql_ready = st.session_state.get("queries_sql_executed", False)
         mongo_ready = st.session_state.get("queries_mongo_executed", False)
 
         if not sql_ready or not mongo_ready:
-            st.warning("⚠️ Veuillez exécuter les requêtes de la **Partie 1** (SQL) et de la **Partie 3** (MongoDB) pour voir la comparaison.")
+            st.warning(
+                "⚠️ Veuillez exécuter les requêtes de la **Partie 1** (SQL) "
+                "et de la **Partie 3** (MongoDB) pour voir la comparaison.",
+            )
             return
 
         st.markdown("---")
@@ -2832,24 +2731,21 @@ def render_partie_5_comparaison(tab) -> None:
         res_mongo = st.session_state["resultats_mongo"]
         objectifs = st.session_state["requetes_objectifs"]
 
-        # Compteurs pour le résumé
         total_ok = 0
         total_queries = len(objectifs)
 
+        # Expander par requête A → N
         for code, objectif in objectifs.items():
             df_sql = res_sql.get(code)
             df_mongo = res_mongo.get(code)
 
-            # Calcul du statut
             icon, message = comparer_dataframes_souple(df_sql, df_mongo)
             if icon == "✅":
                 total_ok += 1
 
-            # Affichage dans un expander
-            with st.expander(f"{icon} Requête {code} : {objectif[:60]}..."):
+            with st.expander(f"{icon} Requête {code} : {objectif}"):
                 st.caption(f"**Objectif :** {objectif}")
-                
-                # Message de statut
+
                 if icon == "✅":
                     st.success(f"Résultat : {message}")
                 elif icon == "⚠️":
@@ -2858,123 +2754,183 @@ def render_partie_5_comparaison(tab) -> None:
                     st.error(f"Résultat : {message}")
 
                 col_a, col_b = st.columns(2)
-                
+
                 with col_a:
                     st.markdown("**1. Résultat SQL (Source)**")
                     if df_sql is not None and not df_sql.empty:
-                        st.dataframe(df_sql, width='stretch', height=200)
-                        st.caption(f"Lignes : {len(df_sql)} | Colonnes : {len(df_sql.columns)}")
+                        st.dataframe(df_sql, width="stretch", height=200)
+                        st.caption(
+                            f"Lignes : {len(df_sql)} | "
+                            f"Colonnes : {len(df_sql.columns)}"
+                        )
                     else:
                         st.info("Vide ou erreur.")
 
                 with col_b:
                     st.markdown("**2. Résultat MongoDB (Cible)**")
                     if df_mongo is not None and not df_mongo.empty:
-                        st.dataframe(df_mongo, width='stretch', height=200)
-                        st.caption(f"Lignes : {len(df_mongo)} | Colonnes : {len(df_mongo.columns)}")
+                        st.dataframe(df_mongo, width="stretch", height=200)
+                        st.caption(
+                            f"Lignes : {len(df_mongo)} | "
+                            f"Colonnes : {len(df_mongo.columns)}"
+                        )
                     else:
                         st.info("Vide ou erreur.")
 
         st.markdown("---")
-        
-        # Score final de validation
+
         score = int((total_ok / total_queries) * 100)
         if score == 100:
-            st.success(f"🏆 Migration validée à 100% ! ({total_ok}/{total_queries} requêtes identiques)")
+            st.success(
+                f"🏆 Migration validée à 100% ! "
+                f"({total_ok}/{total_queries} requêtes identiques)",
+            )
         elif score > 80:
-            st.success(f"✅ Migration validée à {score}% ({total_ok}/{total_queries} requêtes identiques)")
+            st.success(
+                f"✅ Migration validée à {score}% "
+                f"({total_ok}/{total_queries} requêtes identiques)",
+            )
         else:
-            st.error(f"❌ Attention : Seulement {score}% de correspondance ({total_ok}/{total_queries}). Vérifiez vos pipelines.")
+            st.error(
+                f"❌ Attention : seulement {score}% de correspondance "
+                f"({total_ok}/{total_queries}). Vérifiez vos pipelines.",
+            )
+
 
 # =====================================================================
-# Partie 6 : ASSISTANT IA GROQ / LLAMA3
+# PARTIE 6 : ASSISTANT IA (GROQ / LLAMA3)
 # =====================================================================
+
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
+    """
+    Appelle l'API Groq (modèle Llama 3.3) pour générer un pipeline
+    d'agrégation MongoDB à partir d'une question en langage naturel.
+
+    Paramètres
+    ----------
+    question : str
+        Question de l'utilisateur (en français) portant sur les données
+        du modèle document Paris2055.
+
+    Retour
+    ------
+    (dict | None, str | None)
+        - objet JSON contenant au minimum : "collection" et "pipeline" ;
+        - message d'erreur éventuel (None si pas d'erreur).
+    """
     api_key = st.session_state.get("groq_api_key", "")
-    
+
     if not api_key or "gsk_" not in api_key:
         return None, "Clé API Groq manquante ou invalide."
 
     client = Groq(api_key=api_key)
 
     try:
-        # On utilise Llama 3.3 avec le mode JSON natif
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", 
+            model="llama-3.3-70b-versatile",
             messages=[
                 {
-                    "role": "system", 
-                    "content": SCHEMA_CONTEXT + "\n\nIMPORTANT : Analyse bien la demande. Si on cherche une moyenne ou un total, vérifie d'abord si 'stats_trafic' ou 'co2_moyen_ligne' existent pour optimiser. Réponds UNIQUEMENT au format JSON."
+                    "role": "system",
+                    "content": (
+                        SCHEMA_CONTEXT
+                        + "\n\nIMPORTANT : Analyse bien la demande. "
+                        "Si on cherche une moyenne ou un total, vérifie d'abord "
+                        "si 'stats_trafic' ou 'co2_moyen_ligne' existent pour "
+                        "optimiser. Réponds UNIQUEMENT au format JSON."
+                    ),
                 },
-                {"role": "user", "content": f"La question est : {question}"},
+                {
+                    "role": "user",
+                    "content": f"La question est : {question}",
+                },
             ],
-            temperature=0, # Zéro créativité = Maximum de rigueur pour le code
+            temperature=0,
             stream=False,
-            response_format={"type": "json_object"} # Force le format JSON valide
+            response_format={"type": "json_object"},
         )
 
         response_content = completion.choices[0].message.content
-        
-        # Plus besoin de nettoyage complexe, c'est du JSON pur
         data = json.loads(response_content)
         return data, None
 
     except json.JSONDecodeError:
-        return None, f"L'IA n'a pas généré un JSON valide :\n{response_content}"
+        return None, "La réponse de l'IA n'est pas un JSON valide."
     except Exception as exc:
         return None, str(exc)
 
-def analyser_resultats_avec_ia(question_user: str, df: pd.DataFrame, api_key: str) -> str:
+
+def analyser_resultats_avec_ia(
+    question_user: str,
+    df: pd.DataFrame,
+    api_key: str,
+) -> str:
     """
-    Analyse intelligente qui s'adapte à la forme des données :
-    - Valeur unique -> Contexte simple.
-    - Liste/Tableau -> Analyse statistique (Min/Max/Tendances).
+    Demande à l'IA de produire une interprétation textuelle synthétique
+    d'un DataFrame résultant d'une requête.
+
+    L'analyse s'adapte au format des données :
+    - une ligne unique → explication directe sans statistiques ;
+    - plusieurs lignes → synthèse avec mise en avant des valeurs
+      extrêmes et des tendances.
+
+    Paramètres
+    ----------
+    question_user : str
+        Question initiale posée par l'utilisateur.
+    df : pandas.DataFrame
+        Résultat tabulaire de la requête exécutée.
+    api_key : str
+        Clé API Groq à utiliser pour l'appel.
+
+    Retour
+    ------
+    str
+        Texte d'analyse en français, concis et orienté métier.
     """
     if df.empty:
         return "Je n'ai trouvé aucun résultat à analyser."
 
-    # 1. Analyse de la structure du résultat
     nb_lignes = len(df)
-    nb_cols = len(df.columns)
-    
     data_sample = df.head(10).to_string(index=False)
+
     stats_context = ""
     consigne_adaptative = ""
 
-    # 2. Scénario A : Valeur unique ou Ligne unique (Pas de stats comparatives)
+    # Cas 1 : une seule ligne → pas de statistiques globales
     if nb_lignes == 1:
         consigne_adaptative = (
             "Le résultat est une donnée UNIQUE (une seule ligne). "
-            "NE FAIS PAS de calculs statistiques (pas de min/max/moyenne/écart-type). "
-            "Contente-toi d'énoncer le chiffre ou l'information clairement en réponse à la question."
+            "Ne fais pas de statistiques (pas de min/max/moyenne). "
+            "Explique simplement la valeur trouvée par rapport à la question."
         )
-    
-    # 3. Scénario B : Liste de données (Besoin de comparaison)
     else:
-        # On ne calcule les stats que s'il y a des colonnes numériques
-        nums = df.select_dtypes(include=['number'])
+        # Cas 2 : plusieurs lignes → analyse statistique si possible
+        nums = df.select_dtypes(include=["number"])
         if not nums.empty:
             try:
                 stats_desc = nums.describe().to_string()
-                stats_context = f"\nSTATISTIQUES DESCRIPTIVES (Aide pour toi) :\n{stats_desc}\n"
+                stats_context = f"\nSTATISTIQUES DESCRIPTIVES (pour toi) :\n{stats_desc}\n"
                 consigne_adaptative = (
-                    "Le résultat contient PLUSIEURS lignes. "
-                    "Tu DOIS analyser les variations pour donner du relief :\n"
-                    "- Cite le MAX et le MIN si pertinent.\n"
-                    "- Situe les résultats par rapport à la MOYENNE si tu l'as.\n"
-                    "- Ne liste pas juste les lignes, fais une synthèse."
+                    "Le résultat contient plusieurs lignes. "
+                    "Analyse les variations : cite les valeurs élevées et basses, "
+                    "situe-les éventuellement par rapport à la moyenne, "
+                    "et fais une synthèse plutôt qu'une liste brute."
                 )
-            except:
-                consigne_adaptative = "Résume les points clés de cette liste textuelle."
+            except Exception:
+                consigne_adaptative = (
+                    "Résume les principaux éléments observables dans ce tableau."
+                )
         else:
-            consigne_adaptative = "Ceci est une liste de texte. Fais une synthèse des éléments principaux."
+            consigne_adaptative = (
+                "Ce résultat est essentiellement textuel. "
+                "Fais une synthèse des éléments les plus importants."
+            )
 
-    # 4. Construction du prompt
     prompt = (
         f"CONTEXTE : L'utilisateur a demandé : '{question_user}'.\n\n"
-        f"DONNÉES (Extrait) :\n{data_sample}\n"
+        f"DONNÉES (extrait) :\n{data_sample}\n"
         f"{stats_context}\n"
-        f"CONSIGNE : Agis comme un Data Analyst. {consigne_adaptative}\n"
+        f"CONSIGNE : Agis comme un analyste de données. {consigne_adaptative}\n"
         "Réponds en 2 phrases maximum, ton naturel et professionnel."
     )
 
@@ -2983,21 +2939,34 @@ def analyser_resultats_avec_ia(question_user: str, df: pd.DataFrame, api_key: st
         completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Tu es un assistant analyste de données concis."},
+                {
+                    "role": "system",
+                    "content": "Tu es un assistant analyste de données concis.",
+                },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3, # Temperature basse pour rester factuel
+            temperature=0.3,
         )
         return completion.choices[0].message.content
-    except Exception as e:
-        return f"Analyse indisponible : {str(e)}"
-      
+    except Exception as exc:
+        return f"Analyse indisponible : {str(exc)}"
+
+
 def render_partie_6_ia(tab) -> None:
+    """
+    Rend l'onglet 'Partie 6 : Assistant IA'.
+
+    Cet onglet permet :
+    - de poser une question métier en langage naturel ;
+    - de laisser l'IA générer un pipeline MongoDB adapté ;
+    - d'exécuter ce pipeline et d'afficher le résultat ;
+    - de recevoir une interprétation textuelle des résultats.
+    """
     QUESTION_BUTTONS = [
         "la moyenne des retards (en minutes) pour chaque ligne de transport.",
         "le nombre moyen de passagers transportés par jour pour chaque ligne.",
         "le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
-        "les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts."
+        "les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts.",
     ]
 
     if "ai_json_response" not in st.session_state:
@@ -3005,48 +2974,77 @@ def render_partie_6_ia(tab) -> None:
     if "question_a_traiter" not in st.session_state:
         st.session_state["question_a_traiter"] = ""
 
-    def set_question(q: str):
+    def set_question(q: str) -> None:
+        """Stocke directement une question prédéfinie dans l'état de session."""
         st.session_state["question_a_traiter"] = q
-    def set_question_from_input():
-        st.session_state["question_a_traiter"] = st.session_state.get("ai_question_input", "")
+
+    def set_question_from_input() -> None:
+        """Récupère la question saisie dans la zone de texte et la stocke."""
+        st.session_state["question_a_traiter"] = st.session_state.get(
+            "ai_question_input",
+            "",
+        )
 
     with tab:
         st.subheader("Partie 6 : Assistant IA 🧠 (Llama 3.3)")
-        st.markdown("Modèle : **llama-3.3-70b-versatile** (Rapide, Stable & Mode JSON Strict)")
+        st.markdown(
+            "Modèle utilisé : **llama-3.3-70b-versatile** "
+            "(génération de pipelines MongoDB en JSON strict)."
+        )
 
-        # --- HAUT : INPUT ---
-        st.text_area("💬 Posez votre question :", key="ai_question_input", height=70)
-        st.button("✨ Générer & Exécuter", type="primary", on_click=set_question_from_input)
+        # Zone de saisie principale
+        st.text_area(
+            "💬 Posez votre question :",
+            key="ai_question_input",
+            height=70,
+        )
+        st.button(
+            "✨ Générer & Exécuter",
+            type="primary",
+            on_click=set_question_from_input,
+        )
 
-        # --- MILIEU : RÉSULTATS ---
         results_container = st.container()
 
-        # --- BAS : BOUTONS RAPIDES ---
+        # Boutons de questions pré-remplies
         st.markdown("---")
         st.caption("Questions rapides :")
         cols = st.columns(len(QUESTION_BUTTONS))
         for i, question_text in enumerate(QUESTION_BUTTONS):
-            cols[i].button(question_text, key=f"quick_q_{i}", on_click=set_question, args=(question_text,))
+            cols[i].button(
+                question_text,
+                key=f"quick_q_{i}",
+                on_click=set_question,
+                args=(question_text,),
+            )
 
-        # --- LOGIQUE D'EXÉCUTION ---
+        # Logique de traitement de la question active
         question_actuelle = st.session_state["question_a_traiter"].strip()
 
         if question_actuelle:
             with results_container:
                 st.info(f"Question : {question_actuelle}")
-                
-                # 1. Appel API
+
+                # 1. Génération du pipeline MongoDB par l'IA
                 with st.spinner("Génération de la requête MongoDB..."):
                     result_ia, error = interroger_groq(question_actuelle)
 
                 st.session_state["ai_json_response"] = result_ia
 
-                # 2. Affichage du JSON (Replié mais visible)
                 if st.session_state.get("ai_json_response"):
-                    with st.expander("🛠️ Voir le JSON technique généré (Pipeline MongoDB)", expanded=False):
-                        st.code(json.dumps(st.session_state["ai_json_response"], indent=2, ensure_ascii=False), language="json")
+                    with st.expander(
+                        "🛠️ Voir le JSON technique généré (Pipeline MongoDB)",
+                        expanded=False,
+                    ):
+                        st.code(
+                            json.dumps(
+                                st.session_state["ai_json_response"],
+                                indent=2,
+                                ensure_ascii=False,
+                            ),
+                            language="json",
+                        )
 
-                # 3. Gestion des erreurs API
                 if error:
                     st.error(f"Erreur IA : {error}")
                     return
@@ -3054,26 +3052,32 @@ def render_partie_6_ia(tab) -> None:
                 collection_cible = result_ia.get("collection")
                 pipeline = result_ia.get("pipeline")
 
-                # --- VERIFICATION DE VALIDITÉ DU PIPELINE ---
+                # Vérification minimale de la structure du pipeline
                 if pipeline is None or not isinstance(pipeline, list):
-                     st.error("❌ L'IA a échoué à créer un format de pipeline valide.")
-                     return
-
-                # --- CORRECTION ICI : GESTION DU CAS HORS SUJET ---
-                # Si le pipeline est vide [], c'est le signal défini dans le prompt pour dire "Je ne sais pas"
-                if len(pipeline) == 0:
-                    st.warning("🤖 Résultat impossible ou question hors sujet par rapport à la base de données. Reformulez votre demande.")
+                    st.error(
+                        "❌ L'IA n'a pas généré un pipeline MongoDB valide "
+                        "(structure inattendue).",
+                    )
                     return
-                # --------------------------------------------------
 
-                # 4. Exécution Mongo (Seulement si le pipeline n'est pas vide)
+                # Cas défini dans SCHEMA_CONTEXT pour les questions hors sujet
+                if len(pipeline) == 0:
+                    st.warning(
+                        "🤖 La question semble hors sujet par rapport à la base "
+                        "de données. Reformulez votre demande.",
+                    )
+                    return
+
+                # 2. Exécution du pipeline sur la collection cible
                 with st.spinner(f"Exécution sur '{collection_cible}'..."):
                     try:
                         client = pymongo.MongoClient(MONGO_URI)
                         db = client[MONGO_DB_NAME]
-                        
+
                         if collection_cible not in db.list_collection_names():
-                            st.error(f"Erreur : Collection '{collection_cible}' introuvable.")
+                            st.error(
+                                f"Erreur : Collection '{collection_cible}' introuvable.",
+                            )
                             client.close()
                             return
 
@@ -3083,28 +3087,36 @@ def render_partie_6_ia(tab) -> None:
                         if results:
                             st.markdown(f"### 📊 Résultats ({len(results)})")
                             df_res = pd.DataFrame(results)
-                            if "_id" in df_res.columns: df_res["_id"] = df_res["_id"].astype(str)
-                            
-                            # Tableau avec width="stretch"
+                            if "_id" in df_res.columns:
+                                df_res["_id"] = df_res["_id"].astype(str)
+
                             st.dataframe(df_res, width="stretch")
 
-                            # Analyse textuelle
+                            # 3. Analyse textuelle des résultats par l'IA
                             st.markdown("### 💡 Analyse")
                             with st.spinner("Analyse des résultats..."):
-                                analyse = analyser_resultats_avec_ia(question_actuelle, df_res, st.session_state["groq_api_key"])
+                                analyse = analyser_resultats_avec_ia(
+                                    question_actuelle,
+                                    df_res,
+                                    st.session_state["groq_api_key"],
+                                )
                             st.info(analyse, icon="📈")
                         else:
-                            st.warning("La requête est valide, mais elle ne retourne aucun résultat (Tableau vide).")
+                            st.warning(
+                                "La requête est valide, mais elle ne retourne "
+                                "aucun document (tableau vide).",
+                            )
 
                     except Exception as exc:
                         st.error(f"Erreur Mongo : {exc}")
 
+
 # =====================================================================
-# MAIN STREAMLIT (CORRIGÉ - RESET TOTAL)
+# POINT D'ENTRÉE STREAMLIT
 # =====================================================================
 def main() -> None:
     """
-    Point d'entrée de l'application Streamlit Paris 2055.
+    Point d'entrée principal de l'application.
     """
     st.set_page_config(
         page_title="Paris 2055 - Requêtes et Migration vers MongoDB",
@@ -3117,29 +3129,21 @@ def main() -> None:
     st.title("Paris 2055 - Requêtes et Migration vers MongoDB")
 
     with st.sidebar:
-        # =================================================
-        # 1. STATUS MONITOR (LIVE DB)
-        # =================================================
         st.header("📡 État du Système")
-        
-        # --- Check SQLite ---
         sqlite_exists = os.path.exists(DB_FILE)
         sqlite_icon = "✅" if sqlite_exists else "❌"
         sqlite_msg = "Ready" if sqlite_exists else "Missing"
-        
-        # --- Check MongoDB ---
+
         mongo_status = "Disconnected"
         mongo_icon = "❌"
         mongo_color = "red"
-        
+
         try:
             client_check = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=500)
-            client_check.admin.command("ping") 
-            
+            client_check.admin.command("ping")
             if MONGO_DB_NAME in client_check.list_database_names():
                 db_check = client_check[MONGO_DB_NAME]
-                count = db_check.lignes.count_documents({})
-                if count > 0:
+                if db_check.lignes.count_documents({}) > 0:
                     mongo_status = "Ready"
                     mongo_icon = "✅"
                     mongo_color = "green"
@@ -3152,7 +3156,7 @@ def main() -> None:
                 mongo_icon = "❌"
                 mongo_color = "red"
             client_check.close()
-        except:
+        except Exception:
             mongo_status = "Offline"
             mongo_icon = "🚫"
 
@@ -3165,98 +3169,73 @@ def main() -> None:
             st.markdown(f":{mongo_color}[**{mongo_icon} {mongo_status}**]")
 
         st.markdown("---")
-
-        # =================================================
-        # 2. ÉTAT DES CACHES (CSV)
-        # =================================================
         st.header("🗂️ État des Caches")
-        
-        # SQL Cache
         if st.session_state.get("queries_sql_executed", False):
             st.success("Cache SQL : **Chargé**", icon="✅")
         else:
             st.info("Cache SQL : **Vide**", icon="⚪")
 
-        # Mongo Cache
         if st.session_state.get("queries_mongo_executed", False):
             st.success("Cache Mongo : **Chargé**", icon="✅")
         else:
             st.info("Cache Mongo : **Vide**", icon="⚪")
 
         st.markdown("---")
-
-        # =================================================
-        # 3. CONFIGURATION API
-        # =================================================
         st.header("🔑 Config API")
-        
-        new_key = st.text_input(
-            label="Groq API Key",
-            value=st.session_state["groq_api_key"],
-            type="password", 
-            help="Collez votre clé gsk_... ici."
-        )
-
+        new_key = st.text_input("Groq API Key", value=st.session_state["groq_api_key"], type="password")
         if new_key != st.session_state["groq_api_key"]:
             st.session_state["groq_api_key"] = new_key
             os.environ["GROQ_API_KEY"] = new_key
             try:
                 set_key(".env", "GROQ_API_KEY", new_key)
                 st.success("Sauvegardé ! ✅")
-            except Exception:
-                pass
+            except: pass
             time.sleep(0.5)
             st.rerun()
 
         st.markdown("---")
-
-        # =================================================
-        # 4. DANGER ZONE (RESET TOTAL)
-        # =================================================
         st.subheader("🧨 Danger Zone")
-        
-        if st.button("🗑️ DROP DB ET RESET CACHE", type="primary", use_container_width=True):
+
+        # Bouton Optimisé : Supprime la DB, les CSV ET vide le cache RAM
+        if st.button("🗑️ DROP DB, CSV & CLEAR CACHE", type="primary", use_container_width=True):
             try:
-                # 1. Drop MongoDB
+                # 1. Mongo Drop
                 client = pymongo.MongoClient(MONGO_URI)
                 client.drop_database(MONGO_DB_NAME)
                 client.close()
-                
-                # 2. Reset Session State (MONGO)
+
+                # 2. Delete CSVs
+                for folder in [DOSSIER_CSV, DOSSIER_MONGO_CSV]:
+                    if os.path.exists(folder):
+                        for filename in os.listdir(folder):
+                            file_path = os.path.join(folder, filename)
+                            try:
+                                if os.path.isfile(file_path): os.unlink(file_path)
+                            except Exception as e: print(f"Erreur suppression {file_path}: {e}")
+
+                # 3. CLEAR STREAMLIT CACHE
+                st.cache_data.clear()
+
+                # 4. Reset Session
                 st.session_state["queries_mongo_executed"] = False
                 st.session_state["resultats_mongo"] = {}
-                
-                # 3. Reset Session State (SQL) - AJOUTÉ ICI
                 st.session_state["queries_sql_executed"] = False
                 st.session_state["resultats_sql"] = {}
-
-                # 4. Reset Session State (MIGRATION)
-                st.session_state["migration_logs"] = [] 
+                st.session_state["migration_logs"] = []
                 st.session_state["migration_running"] = False
                 st.session_state["migration_done_msg"] = ""
-                
-                # 5. Reset Session State (IA)
                 st.session_state["ai_json_response"] = None
 
-                st.toast("Tout a été remis à zéro (SQL + Mongo) !", icon="💥")
+                st.toast("Tout est nettoyé (RAM + Disque) !", icon="💥")
                 time.sleep(1.5)
                 st.rerun()
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+            except Exception as exc:
+                st.error(f"Erreur : {exc}")
 
-    # =================================================
-    # CORPS PRINCIPAL
-    # =================================================
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        [
-            "Partie 1 : SQL",
-            "Partie 2 : Migration",
-            "Partie 3 : Mongo",
-            "Partie 4 : Dashboard",
-            "Partie 5 : Comparaison",
-            "Partie 6 : Assistant requêtes IA",
-        ],
-    )
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Partie 1 : Requêtes SQL", "Partie 2 : Migration", "Partie 3 : Requêtes MongoDB",
+        "Partie 4 : Dashboard", "Partie 5 : Comparaison", "Partie 6 : Assistant IA"
+    ])
 
     render_partie_1_sqlite(tab1)
     render_partie_2_migration(tab2)

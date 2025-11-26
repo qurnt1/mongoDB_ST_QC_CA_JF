@@ -7,13 +7,11 @@ data/mongodb/collections/
 data/mongodb/resultats_requetes_mongodb/
 data/sqlite/resultats_requetes_sqlite/
 
-# 3. Exclure la base de données SQLite binaire (Optionnel mais recommandé)
-# Si tu veux envoyer la DB vide ou de base, commente la ligne ci-dessous.
-# Si c'est une DB de données qui évolue, garde-la ignorée.
+app_ancienne_version.py
 
 # 4. Exclure le sujet (PDF)
 Sujet projet.pdf
-
+test.py
 
 # --- Exclusions Python Standard & Environnement ---
 
