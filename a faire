@@ -32,17 +32,6 @@ for idx, (_, row) in enumerate(df_l.iterrows(), start=1):
   * **La solution :** Utilise `itertuples()` (beaucoup plus rapide) ou, mieux encore, utilise les méthodes vectorisées de Pandas (`to_dict('records')` après avoir fait tes jointures).
       * *Remplacement rapide :* Remplace `for index, row in df.iterrows():` par `for row in df.itertuples():`. Attention, pour accéder aux données, ce sera `row.ma_colonne` au lieu de `row["ma_colonne"]`.
 
-### 4\. 🧹 Structure du code (Le "Monolithe")
-
-Ton fichier est très long (environ 1300 lignes).
-
-  * **Pourquoi c'est nul :** C'est difficile à maintenir. Si tu veux changer la logique de l'IA, tu dois scroller tout en bas.
-  * **La solution :** Découpe ton projet en plusieurs fichiers (modules) :
-      * `database.py` : Connexions Mongo/SQLite.
-      * `etl.py` : Logique de migration (build\_docs, etc.).
-      * `queries.py` : Les dictionnaires de requêtes SQL et Mongo.
-      * `app.py` : Uniquement l'interface Streamlit.
-
 ### 5\. 🤖 Le prompt de l'IA est "Hardcodé"
 
 La variable `SCHEMA_CONTEXT` est une énorme chaîne de caractères au début du fichier.
@@ -56,11 +45,3 @@ Ton bouton "DROP DB, CSV & CLEAR CACHE" est super dangereux.
 
   * **Pourquoi c'est nul :** Si un utilisateur clique par erreur, il perd tout sans confirmation (sauf si la base SQLite source est toujours là, mais il perd le temps de migration).
   * **La solution :** Utilise un système de "double confirmation" (ex: une case à cocher "Je suis sûr" qui débloque le bouton, ou deux boutons successifs).
-
-### Résumé des actions rapides (Quick Wins) :
-
-1.  **Déplace `MONGO_URI`** dans le fichier `.env`.
-2.  Remplace les `iterrows()` par des `itertuples()` là où c'est facile.
-3.  Déplace le gros texte `SCHEMA_CONTEXT` dans un fichier à part ou tout en bas du script pour ne pas gêner la lecture.
-
-C'est déjà un beau projet, ces remarques visent juste à le rendre plus "pro" \!
