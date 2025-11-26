@@ -134,36 +134,6 @@ RÈGLES DE GÉNÉRATION DU PIPELINE :
 # Partie 3 - Utilitaires génériques (indépendants de SQLite / Mongo / UI)
 # ======================================================================
 
-def enregistrer_resultats_csv(
-    lien_dossier: str,
-    nom_fichier: str,
-    dataframe: pd.DataFrame,
-) -> None:
-    """
-    Enregistre un DataFrame dans un fichier CSV.
-
-    Cette fonction garantit que le dossier cible existe, puis écrit le
-    fichier CSV avec un encodage UTF-8 compatible Excel.
-
-    Paramètres
-    ----------
-    lien_dossier : str
-        Chemin du dossier où créer le fichier CSV.
-    nom_fichier : str
-        Nom du fichier CSV (ex. 'resultat_req_a.csv').
-    dataframe : pandas.DataFrame
-        Données tabulaires à exporter.
-
-    Exceptions
-    ----------
-    Toute exception d'E/S (PermissionError, OSError, etc.) remonte
-    directement à l'appelant.
-    """
-    os.makedirs(lien_dossier, exist_ok=True)
-    full_path = os.path.join(lien_dossier, nom_fichier)
-    dataframe.to_csv(full_path, index=False, encoding="utf-8-sig")
-
-
 def log_progress(
     current: int,
     total: int,
@@ -1340,263 +1310,61 @@ REQUETES_OBJECTIFS: Dict[str, str] = {
 }
 
 
+@st.cache_data(show_spinner=False)
 def executer_toutes_les_requetes() -> Dict[str, pd.DataFrame]:
     """
     Exécute toutes les requêtes SQL métier (A → N) sur la base SQLite.
-
-    Comportement
-    ------------
-    - Ouvre la base désignée par DB_FILE.
-    - Exécute chaque requête SQL correspondante aux objectifs A..N.
-    - Stocke chaque résultat dans un fichier CSV (un fichier par requête).
-    - Retourne également un dictionnaire {code_requête -> DataFrame résultat}
-      pour un usage direct dans l'application (affichage, comparaison, etc.).
-
-    Exceptions
-    ----------
-    FileNotFoundError
-        Si le fichier SQLite DB_FILE n'existe pas.
+    UTILISE LE CACHE STREAMLIT : Ne recalcule pas si déjà fait.
     """
     if not os.path.exists(DB_FILE):
-        raise FileNotFoundError(DB_FILE)
+        return {}
 
     resultats: Dict[str, pd.DataFrame] = {}
 
+    # Dictionnaire des requêtes (identique à avant)
     sql_queries: Dict[str, str] = {
-        "A": (
-            "SELECT L.nom_ligne, "
-            "AVG(T.retard_minutes) AS moyenne_retard_minutes "
-            "FROM Trafic AS T "
-            "JOIN Ligne AS L ON T.id_ligne = L.id_ligne "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY moyenne_retard_minutes DESC;"
-        ),
-        "B": (
-            "SELECT "
-            "    L.id_ligne, "
-            "    AVG(T.total_passagers_jour) AS moyenne_passagers_jour "
-            "FROM ( "
-            "    SELECT "
-            "        A.id_ligne, "
-            "        DATE(H.heure_prevue) AS jour, "
-            "        SUM(H.passagers_estimes) AS total_passagers_jour "
-            "    FROM Horaire AS H "
-            "    JOIN Arret AS A ON H.id_arret = A.id_arret "
-            "    GROUP BY "
-            "        A.id_ligne, "
-            "        jour "
-            ") AS T "
-            "JOIN Ligne AS L ON T.id_ligne = L.id_ligne "
-            "GROUP BY L.id_ligne "
-            "ORDER BY moyenne_passagers_jour DESC;"
-        ),
-        "C": (
-            "SELECT L.nom_ligne, "
-            "COUNT(DISTINCT I.id_trafic) AS nb_trafic_avec_incident, "
-            "COUNT(DISTINCT T.id_trafic) AS nb_total_trafic, "
-            "CASE "
-            "WHEN COUNT(DISTINCT T.id_trafic) = 0 THEN 0 "
-            "ELSE "
-            "(CAST(COUNT(DISTINCT I.id_trafic) AS REAL) "
-            "/ COUNT(DISTINCT T.id_trafic)) * 100 "
-            "END AS taux_incident_pourcent "
-            "FROM Ligne AS L "
-            "LEFT JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "LEFT JOIN Incident AS I ON T.id_trafic = I.id_trafic "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY taux_incident_pourcent DESC;"
-        ),
-        "D": (
-            "SELECT V.id_vehicule, V.immatriculation, "
-            "AVG(M.valeur) AS moyenne_co2 "
-            "FROM Vehicule AS V "
-            "JOIN Ligne AS L ON V.id_ligne = L.id_ligne "
-            "JOIN Arret AS A ON L.id_ligne = A.id_ligne "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'CO2' "
-            "GROUP BY V.id_vehicule, V.immatriculation "
-            "ORDER BY moyenne_co2 DESC;"
-        ),
-        "E": (
-            "SELECT Q.nom, "
-            "AVG(M.valeur) AS moyenne_bruit_db "
-            "FROM Quartier AS Q "
-            "JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier "
-            "JOIN Arret AS A ON AQ.id_arret = A.id_arret "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'Bruit' "
-            "GROUP BY Q.nom "
-            "ORDER BY moyenne_bruit_db DESC "
-            "LIMIT 5;"
-        ),
-        "F": (
-            "SELECT DISTINCT L.nom_ligne "
-            "FROM Ligne AS L "
-            "JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "WHERE T.retard_minutes > 10 "
-            "EXCEPT "
-            "SELECT DISTINCT L.nom_ligne "
-            "FROM Ligne AS L "
-            "JOIN Trafic AS T ON L.id_ligne = T.id_ligne "
-            "JOIN Incident AS I ON T.id_trafic = I.id_trafic;"
-        ),
-        "G": (
-            "SELECT "
-            "COUNT(*) AS total_trajets, "
-            "SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) "
-            "AS trajets_sans_retard, "
-            "(CAST(SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) "
-            "AS REAL) / COUNT(*)) * 100 "
-            "AS taux_ponctualite_global_pourcent "
-            "FROM Trafic;"
-        ),
-        "H": (
-            "SELECT Q.nom, "
-            "COUNT(AQ.id_arret) AS nombre_arrets "
-            "FROM Quartier AS Q "
-            "LEFT JOIN ArretQuartier AS AQ "
-            "ON Q.id_quartier = AQ.id_quartier "
-            "GROUP BY Q.nom "
-            "ORDER BY nombre_arrets DESC;"
-        ),
-        "I": (
-            "WITH AvgRetard AS ( "
-            "  SELECT id_ligne, "
-            "         AVG(retard_minutes) AS moyenne_retard "
-            "  FROM Trafic "
-            "  GROUP BY id_ligne "
-            "), "
-            "AvgCO2 AS ( "
-            "  SELECT A.id_ligne, "
-            "         AVG(M.valeur) AS moyenne_co2 "
-            "  FROM Mesure AS M "
-            "  JOIN Capteur AS C ON M.id_capteur = C.id_capteur "
-            "  JOIN Arret AS A ON C.id_arret = A.id_arret "
-            "  WHERE C.type_capteur = 'CO2' "
-            "  GROUP BY A.id_ligne "
-            ") "
-            "SELECT L.nom_ligne, "
-            "COALESCE(R.moyenne_retard, 0) AS moyenne_retard, "
-            "COALESCE(C.moyenne_co2, 0) AS moyenne_co2 "
-            "FROM Ligne AS L "
-            "LEFT JOIN AvgRetard AS R ON L.id_ligne = R.id_ligne "
-            "LEFT JOIN AvgCO2 AS C ON L.id_ligne = C.id_ligne "
-            "ORDER BY L.nom_ligne;"
-        ),
-        "J": (
-            "SELECT L.nom_ligne, "
-            "AVG(M.valeur) AS moyenne_temperature "
-            "FROM Ligne AS L "
-            "JOIN Arret AS A ON L.id_ligne = A.id_ligne "
-            "JOIN Capteur AS C ON A.id_arret = C.id_arret "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'Temperature' "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY moyenne_temperature DESC;"
-        ),
-        "K": (
-            "SELECT C.nom, "
-            "AVG(T.retard_minutes) AS moyenne_retard_minutes "
-            "FROM Chauffeur AS C "
-            "JOIN Vehicule AS V ON C.id_chauffeur = V.id_chauffeur "
-            "JOIN Trafic AS T ON V.id_ligne = T.id_ligne "
-            "GROUP BY C.nom "
-            "ORDER BY moyenne_retard_minutes DESC;"
-        ),
-        "L": (
-            "SELECT L.nom_ligne, "
-            "COUNT(V.id_vehicule) AS total_vehicules, "
-            "SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) "
-            "AS nb_electriques, "
-            "(CAST(SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 "
-            "ELSE 0 END) AS REAL) / COUNT(V.id_vehicule)) * 100 "
-            "AS pourcentage_electrique "
-            "FROM Ligne AS L "
-            "JOIN Vehicule AS V ON L.id_ligne = V.id_ligne "
-            "WHERE L.type = 'Bus' "
-            "GROUP BY L.nom_ligne "
-            "ORDER BY pourcentage_electrique DESC;"
-        ),
-        "M": (
-            "SELECT C.id_capteur, "
-            "C.latitude, "
-            "C.longitude, "
-            "AVG(M.valeur) AS moyenne_co2, "
-            "CASE "
-            "  WHEN AVG(M.valeur) > 800 THEN 'Élevé' "
-            "  WHEN AVG(M.valeur) > 450 THEN 'Moyen' "
-            "  ELSE 'Faible' "
-            "END AS niveau_pollution "
-            "FROM Capteur AS C "
-            "JOIN Mesure AS M ON C.id_capteur = M.id_capteur "
-            "WHERE C.type_capteur = 'CO2' "
-            "GROUP BY C.id_capteur, C.latitude, C.longitude "
-            "ORDER BY moyenne_co2 DESC;"
-        ),
-        "N": (
-            "SELECT nom_ligne, "
-            "type, "
-            "frequentation_moyenne, "
-            "CASE "
-            "  WHEN frequentation_moyenne > 2000 THEN 'Haute Fréquentation' "
-            "  WHEN frequentation_moyenne > 1000 THEN 'Moyenne Fréquentation' "
-            "  ELSE 'Basse Fréquentation' "
-            "END AS categorie_frequentation "
-            "FROM Ligne "
-            "ORDER BY frequentation_moyenne DESC;"
-        ),
+        "A": "SELECT L.nom_ligne, AVG(T.retard_minutes) AS moyenne_retard_minutes FROM Trafic AS T JOIN Ligne AS L ON T.id_ligne = L.id_ligne GROUP BY L.nom_ligne ORDER BY moyenne_retard_minutes DESC;",
+        "B": "SELECT L.id_ligne, AVG(T.total_passagers_jour) AS moyenne_passagers_jour FROM ( SELECT A.id_ligne, DATE(H.heure_prevue) AS jour, SUM(H.passagers_estimes) AS total_passagers_jour FROM Horaire AS H JOIN Arret AS A ON H.id_arret = A.id_arret GROUP BY A.id_ligne, jour ) AS T JOIN Ligne AS L ON T.id_ligne = L.id_ligne GROUP BY L.id_ligne ORDER BY moyenne_passagers_jour DESC;",
+        "C": "SELECT L.nom_ligne, COUNT(DISTINCT I.id_trafic) AS nb_trafic_avec_incident, COUNT(DISTINCT T.id_trafic) AS nb_total_trafic, CASE WHEN COUNT(DISTINCT T.id_trafic) = 0 THEN 0 ELSE (CAST(COUNT(DISTINCT I.id_trafic) AS REAL) / COUNT(DISTINCT T.id_trafic)) * 100 END AS taux_incident_pourcent FROM Ligne AS L LEFT JOIN Trafic AS T ON L.id_ligne = T.id_ligne LEFT JOIN Incident AS I ON T.id_trafic = I.id_trafic GROUP BY L.nom_ligne ORDER BY taux_incident_pourcent DESC;",
+        "D": "SELECT V.id_vehicule, V.immatriculation, AVG(M.valeur) AS moyenne_co2 FROM Vehicule AS V JOIN Ligne AS L ON V.id_ligne = L.id_ligne JOIN Arret AS A ON L.id_ligne = A.id_ligne JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'CO2' GROUP BY V.id_vehicule, V.immatriculation ORDER BY moyenne_co2 DESC;",
+        "E": "SELECT Q.nom, AVG(M.valeur) AS moyenne_bruit_db FROM Quartier AS Q JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier JOIN Arret AS A ON AQ.id_arret = A.id_arret JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'Bruit' GROUP BY Q.nom ORDER BY moyenne_bruit_db DESC LIMIT 5;",
+        "F": "SELECT DISTINCT L.nom_ligne FROM Ligne AS L JOIN Trafic AS T ON L.id_ligne = T.id_ligne WHERE T.retard_minutes > 10 EXCEPT SELECT DISTINCT L.nom_ligne FROM Ligne AS L JOIN Trafic AS T ON L.id_ligne = T.id_ligne JOIN Incident AS I ON T.id_trafic = I.id_trafic;",
+        "G": "SELECT COUNT(*) AS total_trajets, SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) AS trajets_sans_retard, (CAST(SUM(CASE WHEN retard_minutes = 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)) * 100 AS taux_ponctualite_global_pourcent FROM Trafic;",
+        "H": "SELECT Q.nom, COUNT(AQ.id_arret) AS nombre_arrets FROM Quartier AS Q LEFT JOIN ArretQuartier AS AQ ON Q.id_quartier = AQ.id_quartier GROUP BY Q.nom ORDER BY nombre_arrets DESC;",
+        "I": "WITH AvgRetard AS ( SELECT id_ligne, AVG(retard_minutes) AS moyenne_retard FROM Trafic GROUP BY id_ligne ), AvgCO2 AS ( SELECT A.id_ligne, AVG(M.valeur) AS moyenne_co2 FROM Mesure AS M JOIN Capteur AS C ON M.id_capteur = C.id_capteur JOIN Arret AS A ON C.id_arret = A.id_arret WHERE C.type_capteur = 'CO2' GROUP BY A.id_ligne ) SELECT L.nom_ligne, COALESCE(R.moyenne_retard, 0) AS moyenne_retard, COALESCE(C.moyenne_co2, 0) AS moyenne_co2 FROM Ligne AS L LEFT JOIN AvgRetard AS R ON L.id_ligne = R.id_ligne LEFT JOIN AvgCO2 AS C ON L.id_ligne = C.id_ligne ORDER BY L.nom_ligne;",
+        "J": "SELECT L.nom_ligne, AVG(M.valeur) AS moyenne_temperature FROM Ligne AS L JOIN Arret AS A ON L.id_ligne = A.id_ligne JOIN Capteur AS C ON A.id_arret = C.id_arret JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'Temperature' GROUP BY L.nom_ligne ORDER BY moyenne_temperature DESC;",
+        "K": "SELECT C.nom, AVG(T.retard_minutes) AS moyenne_retard_minutes FROM Chauffeur AS C JOIN Vehicule AS V ON C.id_chauffeur = V.id_chauffeur JOIN Trafic AS T ON V.id_ligne = T.id_ligne GROUP BY C.nom ORDER BY moyenne_retard_minutes DESC;",
+        "L": "SELECT L.nom_ligne, COUNT(V.id_vehicule) AS total_vehicules, SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) AS nb_electriques, (CAST(SUM(CASE WHEN V.type_vehicule = 'Electrique' THEN 1 ELSE 0 END) AS REAL) / COUNT(V.id_vehicule)) * 100 AS pourcentage_electrique FROM Ligne AS L JOIN Vehicule AS V ON L.id_ligne = V.id_ligne WHERE L.type = 'Bus' GROUP BY L.nom_ligne ORDER BY pourcentage_electrique DESC;",
+        "M": "SELECT C.id_capteur, C.latitude, C.longitude, AVG(M.valeur) AS moyenne_co2, CASE WHEN AVG(M.valeur) > 800 THEN 'Élevé' WHEN AVG(M.valeur) > 450 THEN 'Moyen' ELSE 'Faible' END AS niveau_pollution FROM Capteur AS C JOIN Mesure AS M ON C.id_capteur = M.id_capteur WHERE C.type_capteur = 'CO2' GROUP BY C.id_capteur, C.latitude, C.longitude ORDER BY moyenne_co2 DESC;",
+        "N": "SELECT nom_ligne, type, frequentation_moyenne, CASE WHEN frequentation_moyenne > 2000 THEN 'Haute Fréquentation' WHEN frequentation_moyenne > 1000 THEN 'Moyenne Fréquentation' ELSE 'Basse Fréquentation' END AS categorie_frequentation FROM Ligne ORDER BY frequentation_moyenne DESC;",
     }
 
     with sqlite3.connect(DB_FILE) as conn:
         for code, query in sql_queries.items():
             try:
+                # On ne fait que lire, pas d'écriture CSV ici
                 df_result = pd.read_sql_query(query, conn)
-                enregistrer_resultats_csv(
-                    DOSSIER_CSV,
-                    f"resultat_req_{code.lower()}.csv",
-                    df_result,
-                )
                 resultats[code] = df_result
             except Exception as exc:
-                # On capture l'erreur dans un DataFrame pour la remonter à l'IHM.
                 resultats[code] = pd.DataFrame([{"erreur": str(exc)}])
 
     return resultats
 
-
-def charger_cache_csv() -> tuple[Dict[str, pd.DataFrame], bool]:
+def forcer_ecriture_csv_sql(resultats: Dict[str, pd.DataFrame]) -> None:
     """
-    Recharge en mémoire les résultats SQL précédemment exportés en CSV.
-
-    Retour
-    ------
-    (dict[str, pandas.DataFrame], bool)
-        - Dictionnaire {code_requête -> DataFrame} pour chaque CSV retrouvé.
-        - Booléen indiquant si au moins un fichier a été chargé avec succès.
+    Fonction NON CACHÉE : Écrit les résultats sur le disque.
+    Appelée explicitement après le calcul.
     """
-    print("Chargement cache CSV...", end="\n")
-    resultats: Dict[str, pd.DataFrame] = {}
-    found_any = False
-
-    for code in REQUETES_OBJECTIFS.keys():
-        path = os.path.join(DOSSIER_CSV, f"resultat_req_{code.lower()}.csv")
-        if os.path.exists(path):
-            try:
-                resultats[code] = pd.read_csv(path)
-                found_any = True
-            except Exception:
-                # Si le chargement échoue pour une requête, on la marque vide
-                resultats[code] = pd.DataFrame()
-
-    if found_any:
-        print("CSV chargés ✅")
-    else:
-        print(" Non trouve")
-    print("\n")
-    return resultats, found_any
-
+    os.makedirs(DOSSIER_CSV, exist_ok=True)
+    print("💾 Sauvegarde CSV SQL sur disque...")
+    for code, df in resultats.items():
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        full_path = os.path.join(DOSSIER_CSV, nom_fichier)
+        try:
+            df.to_csv(full_path, index=False, encoding="utf-8-sig")
+        except Exception as e:
+            print(f"Erreur écriture {nom_fichier}: {e}")
+    print("✅ CSV SQL sauvegardés.")
 
 # =====================================================================
 # MONGO METIER : requêtes d'analyse sur le modèle document
@@ -2459,55 +2227,33 @@ QUERY_MONGO_FUNCS: Dict[str, Callable] = {
     "N": query_N_mongo,
 }
 
-
+@st.cache_data(show_spinner=False)
 def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
     """
-    Exécute toutes les requêtes MongoDB métier (A → N) sur la base Paris2055.
-
-    Comportement
-    ------------
-    - Tente de se connecter au serveur MongoDB.
-    - Vérifie la présence de la base MONGO_DB_NAME.
-    - Exécute chaque fonction de QUERY_MONGO_FUNCS.
-    - Sauvegarde les résultats dans des fichiers CSV (dossier DOSSIER_MONGO_CSV).
-    - Retourne un dictionnaire {code_requête -> DataFrame résultat}.
-
-    En cas d'erreur globale de connexion, un DataFrame contenant une colonne
-    'erreur' est renvoyé pour chaque code de requête.
+    Exécute toutes les requêtes MongoDB métier (A → N).
+    UTILISE LE CACHE STREAMLIT.
     """
     client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
     resultats: Dict[str, pd.DataFrame] = {}
 
     try:
         client.admin.command("ping")
-
         if MONGO_DB_NAME not in client.list_database_names():
-            error_msg = (
-                f"La base '{MONGO_DB_NAME}' n'existe pas. "
-                "Lancez la migration (Partie 2)."
-            )
-            error_df = pd.DataFrame([{"erreur": error_msg}])
+            error_df = pd.DataFrame([{"erreur": f"Base '{MONGO_DB_NAME}' inexistante."}])
+            # On retourne une erreur pour toutes les clés pour éviter des plantages UI
             return {code: error_df for code in QUERY_MONGO_FUNCS.keys()}
 
         db = client[MONGO_DB_NAME]
         for code, func in QUERY_MONGO_FUNCS.items():
             try:
+                # Calcul seulement
                 df = func(db)
             except Exception as exc:
-                df = pd.DataFrame(
-                    [{"erreur": f"Erreur requête: {str(exc)}"}],
-                )
-
-            enregistrer_resultats_csv(
-                DOSSIER_MONGO_CSV,
-                f"resultat_req_{code.lower()}.csv",
-                df,
-            )
+                df = pd.DataFrame([{"erreur": f"Erreur requête: {str(exc)}"}])
             resultats[code] = df
 
     except Exception as exc:
         err_msg = f"Impossible de se connecter à MongoDB : {str(exc)}"
-        print(f"[ERREUR] {err_msg}")
         error_df = pd.DataFrame([{"erreur": err_msg}])
         return {code: error_df for code in QUERY_MONGO_FUNCS.keys()}
     finally:
@@ -2515,41 +2261,42 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
 
     return resultats
 
-
-def charger_cache_csv_mongo() -> tuple[Dict[str, pd.DataFrame], bool]:
+def tenter_chargement_depuis_csv(dossier_cible: str) -> Dict[str, pd.DataFrame]:
     """
-    Recharge en mémoire les résultats MongoDB précédemment exportés en CSV.
-
-    Retour
-    ------
-    (dict[str, pandas.DataFrame], bool)
-        - Dictionnaire {code_requête -> DataFrame} pour chaque CSV retrouvé.
-        - Booléen indiquant si au moins un CSV Mongo a été chargé.
+    Tente de recharger les DataFrames depuis les CSV existants sur le disque
+    pour restaurer l'état de l'application au démarrage.
     """
-    print("Chargement cache CSV MongoDB...", end="\n")
-    resultats: Dict[str, pd.DataFrame] = {}
-    found_any = False
-
+    resultats_charges = {}
+    # On parcourt les codes A, B, C... définis dans les objectifs
     for code in REQUETES_OBJECTIFS.keys():
-        path = os.path.join(
-            DOSSIER_MONGO_CSV,
-            f"resultat_req_{code.lower()}.csv",
-        )
-        if os.path.exists(path):
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        chemin_complet = os.path.join(dossier_cible, nom_fichier)
+        
+        if os.path.exists(chemin_complet):
             try:
-                resultats[code] = pd.read_csv(path)
-                found_any = True
+                # On charge le CSV
+                df = pd.read_csv(chemin_complet)
+                resultats_charges[code] = df
             except Exception:
-                # Si la lecture échoue pour un fichier, la requête est marquée vide
-                resultats[code] = pd.DataFrame()
+                # Si un fichier est corrompu, on l'ignore
+                pass
+    
+    return resultats_charges
 
-    if found_any:
-        print("CSV MongoDB chargés ✅")
-    else:
-        print(" Non trouve")
-    print("\n")
-    return resultats, found_any
-
+def forcer_ecriture_csv_mongo(resultats: Dict[str, pd.DataFrame]) -> None:
+    """
+    Fonction NON CACHÉE : Écrit les résultats Mongo sur le disque.
+    """
+    os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
+    print("💾 Sauvegarde CSV MongoDB sur disque...")
+    for code, df in resultats.items():
+        nom_fichier = f"resultat_req_{code.lower()}.csv"
+        full_path = os.path.join(DOSSIER_MONGO_CSV, nom_fichier)
+        try:
+            df.to_csv(full_path, index=False, encoding="utf-8-sig")
+        except Exception as e:
+            print(f"Erreur écriture {nom_fichier}: {e}")
+    print("✅ CSV MongoDB sauvegardés.")
 
 def check_connexion_details() -> tuple[bool, bool]:
     """
@@ -2593,49 +2340,51 @@ os.makedirs(DOSSIER_CSV, exist_ok=True)
 os.makedirs(DOSSIER_JSON, exist_ok=True)
 os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
 
-
 def init_session_state() -> None:
     """
-    Initialise une seule fois l'ensemble des variables stockées dans
-    st.session_state pour toute l'application Streamlit.
-
-    Cette fonction :
-    - charge la clé API Groq depuis le .env (si elle n'est pas déjà en session) ;
-    - charge les résultats SQL et MongoDB depuis les caches CSV si disponibles ;
-    - prépare les structures utilisées pour la migration (historique des logs) ;
-    - prépare les structures utilisées par l'assistant IA.
+    Initialise les variables de session.
+    Vérifie la présence de CSV sur le disque pour recharger l'état automatiquement.
     """
     if st.session_state.get("initialized", False):
         return
 
-    # Clé API Groq utilisée par la partie Assistant IA
     if "groq_api_key" not in st.session_state:
         st.session_state["groq_api_key"] = os.getenv("GROQ_API_KEY", "")
 
-    # Description textuelle des requêtes A → N
     st.session_state["requetes_objectifs"] = REQUETES_OBJECTIFS
 
-    # Chargement éventuel des résultats SQL (Partie 1)
-    resultats_sql, sql_cache_found = charger_cache_csv()
-    st.session_state["resultats_sql"] = resultats_sql
-    st.session_state["queries_sql_executed"] = sql_cache_found
+    # --- CHARGEMENT AUTOMATIQUE SQL ---
+    if "resultats_sql" not in st.session_state:
+        # On tente de charger depuis le disque
+        data_sql = tenter_chargement_depuis_csv(DOSSIER_CSV)
+        if data_sql:
+            st.session_state["resultats_sql"] = data_sql
+            st.session_state["queries_sql_executed"] = True
+            print("✅ Session SQL restaurée depuis les CSV.")
+        else:
+            st.session_state["resultats_sql"] = {}
+            st.session_state["queries_sql_executed"] = False
 
-    # Chargement éventuel des résultats MongoDB (Partie 3)
-    resultats_mongo, mongo_cache_found = charger_cache_csv_mongo()
-    st.session_state["resultats_mongo"] = resultats_mongo
-    st.session_state["queries_mongo_executed"] = mongo_cache_found
+    # --- CHARGEMENT AUTOMATIQUE MONGO ---
+    if "resultats_mongo" not in st.session_state:
+        # On tente de charger depuis le disque
+        data_mongo = tenter_chargement_depuis_csv(DOSSIER_MONGO_CSV)
+        if data_mongo:
+            st.session_state["resultats_mongo"] = data_mongo
+            st.session_state["queries_mongo_executed"] = True
+            print("✅ Session MongoDB restaurée depuis les CSV.")
+        else:
+            st.session_state["resultats_mongo"] = {}
+            st.session_state["queries_mongo_executed"] = False
 
-    # État de la migration (Partie 2)
+    # Autres états
     st.session_state["migration_logs"] = []
     st.session_state["migration_done_msg"] = ""
     st.session_state["migration_running"] = False
-
-    # État de l'assistant IA (Partie 6)
     st.session_state["ai_json_response"] = None
     st.session_state["ai_question_text_value"] = ""
 
     st.session_state["initialized"] = True
-
 
 # =====================================================================
 # LOGS MIGRATION (PARTIE 2) : STOCKAGE ET AFFICHAGE
@@ -2680,64 +2429,47 @@ def streamlit_migration_log(message: str, replace_last: bool = False) -> None:
 # =====================================================================
 # PARTIE 1 : INTERFACE REQUÊTES SQLITE
 # =====================================================================
-
 def render_partie_1_sqlite(tab) -> None:
-    """
-    Rend l'onglet 'Partie 1 : Requêtes SQLite'.
-
-    Cet onglet permet :
-    - d'exécuter les requêtes SQL A → N sur la base SQLite ;
-    - de visualiser les résultats dans des tableaux interactifs ;
-    - de voir si les résultats proviennent du cache CSV ou d'une exécution fraîche.
-    """
     with tab:
         st.subheader("Partie 1 : Requêtes SQLite")
 
-        status_text = (
-            "Données chargées."
-            if st.session_state["queries_sql_executed"]
-            else "Données non chargées."
-        )
+        status_text = "Données chargées." if st.session_state["queries_sql_executed"] else "Données non chargées."
         st.write(status_text)
 
-        # Bouton pour lancer l'exécution des requêtes SQL
-        if st.button("Executer Requetes", key="btn_sql_run"):
-            with st.spinner("Exécution des requêtes SQLite..."):
+        # Modification ici : Calcul + Sauvegarde
+        if st.button("Executer & Sauvegarder CSV", key="btn_sql_run"):
+            with st.spinner("Traitement en cours (Cache + Disque)..."):
+                # 1. Récupération rapide (ou calcul)
                 res = executer_toutes_les_requetes()
-            st.session_state["resultats_sql"] = res
-            st.session_state["queries_sql_executed"] = True
-            st.success("✅ Requêtes terminées.")
+                
+                # 2. Écriture forcée sur le disque
+                forcer_ecriture_csv_sql(res)
+                
+                st.session_state["resultats_sql"] = res
+                st.session_state["queries_sql_executed"] = True
+                st.success("✅ Calculs terminés et CSV mis à jour sur le disque.")
 
         st.markdown("---")
 
-        # Si aucune requête n'a encore été exécutée, on affiche une aide
         if not st.session_state["queries_sql_executed"]:
-            st.info(
-                "Les résultats ne sont pas encore disponibles. "
-                "Cliquez sur « Executer Requetes » pour lancer les requêtes.",
-            )
+            st.info("Cliquez sur le bouton pour lancer les requêtes.")
             return
 
-        # Affichage détaillé des résultats, un expander par requête A → N
         st.markdown("### Résultats détaillés des requêtes SQLite")
-
         for code, objectif in st.session_state["requetes_objectifs"].items():
             df = st.session_state["resultats_sql"].get(code)
-            with st.expander(
-                f"Requête {code} – {objectif}",
-                expanded=False,
-            ):
+            with st.expander(f"Requête {code} – {objectif}", expanded=False):
                 st.markdown(f"**Objectif :** {objectif}")
                 if df is None:
-                    st.warning("Aucun résultat pour cette requête.")
+                    st.warning("Aucun résultat.")
                 elif df.empty:
-                    st.info("La requête n'a retourné aucun enregistrement.")
+                    st.info("Résultat vide.")
                 else:
+                    # --- CORRECTION ICI ---
                     st.dataframe(
-                        df.style.set_properties(**{"text-align": "left"}),
-                        width="content",
+                        df.style.set_properties(**{"text-align": "left"}), 
+                        width="stretch"  # Remplace use_container_width=True
                     )
-
 
 # =====================================================================
 # PARTIE 2 : INTERFACE MIGRATION SQLITE → MONGODB
@@ -2819,90 +2551,55 @@ def render_partie_2_migration(tab) -> None:
 # =====================================================================
 # PARTIE 3 : INTERFACE REQUÊTES MONGODB
 # =====================================================================
-
 def render_partie_3_mongo(tab) -> None:
-    """
-    Rend l'onglet 'Partie 3 : Requêtes MongoDB'.
-
-    Cet onglet permet :
-    - de vérifier l'état du serveur MongoDB et la présence de la base ;
-    - d'exécuter les requêtes A → N directement sur MongoDB ;
-    - de visualiser les résultats dans des tableaux interactifs.
-    """
     with tab:
         st.subheader("Partie 3 : Requêtes MongoDB")
 
-        # Vérification de la disponibilité de MongoDB et de la base cible
         server_ok, db_ok = check_connexion_details()
 
         if not server_ok:
-            st.error(
-                f"❌ Impossible de se connecter au serveur MongoDB sur {MONGO_URI}",
-            )
+            st.error(f"❌ Impossible de se connecter au serveur MongoDB sur {MONGO_URI}")
         elif not db_ok:
-            st.warning(
-                f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore. "
-                "Lancez la migration en Partie 2.",
-            )
+            st.warning(f"⚠️ La base '{MONGO_DB_NAME}' n'existe pas encore. Lancez la migration en Partie 2.")
         else:
-            st.success(
-                f"✅ Serveur connecté et base '{MONGO_DB_NAME}' détectée.",
-            )
+            st.success(f"✅ Serveur connecté et base '{MONGO_DB_NAME}' détectée.")
 
         st.markdown("---")
-
-        mongo_queries_executed = st.session_state.get(
-            "queries_mongo_executed",
-            False,
-        )
-        resultats_mongo: Dict[str, pd.DataFrame] = st.session_state.get(
-            "resultats_mongo",
-            {},
-        )
-
-        # Le bouton est désactivé tant que le serveur ou la base ne sont pas disponibles
+        
         btn_disabled = not (server_ok and db_ok)
 
-        if st.button(
-            "Executer Requetes MongoDB",
-            key="btn_mongo_run",
-            disabled=btn_disabled,
-        ):
-            with st.spinner("Exécution des requêtes MongoDB..."):
-                resultats_mongo = executer_toutes_les_requetes_mongo()
-            st.session_state["resultats_mongo"] = resultats_mongo
-            st.session_state["queries_mongo_executed"] = True
-            mongo_queries_executed = True
-            st.success("✅ Requêtes MongoDB terminées.")
+        # Modification ici : Calcul + Sauvegarde
+        if st.button("Executer & Sauvegarder CSV Mongo", key="btn_mongo_run", disabled=btn_disabled):
+            with st.spinner("Traitement en cours (Cache + Disque)..."):
+                # 1. Récupération rapide
+                res = executer_toutes_les_requetes_mongo()
+                
+                # 2. Écriture forcée sur disque
+                forcer_ecriture_csv_mongo(res)
+                
+                st.session_state["resultats_mongo"] = res
+                st.session_state["queries_mongo_executed"] = True
+                st.success("✅ Requêtes MongoDB terminées et CSV sauvegardés.")
 
-        if not mongo_queries_executed:
-            st.info(
-                "Clique sur « Executer Requetes MongoDB » "
-                "pour lancer les requêtes.",
-            )
+        if not st.session_state.get("queries_mongo_executed"):
+            st.info("Cliquez sur le bouton pour lancer les requêtes.")
             return
 
-        # Affichage détaillé des résultats Mongo, un expander par requête A → N
         st.markdown("### Résultats détaillés des requêtes MongoDB")
-
         for code, objectif in st.session_state["requetes_objectifs"].items():
-            df = resultats_mongo.get(code)
-            with st.expander(
-                f"Requête {code} – {objectif}",
-                expanded=False,
-            ):
+            df = st.session_state["resultats_mongo"].get(code)
+            with st.expander(f"Requête {code} – {objectif}", expanded=False):
                 st.markdown(f"**Objectif :** {objectif}")
                 if df is None:
-                    st.warning("Aucun résultat pour cette requête.")
+                    st.warning("Aucun résultat.")
                 elif df.empty:
-                    st.info("La requête n'a retourné aucun enregistrement.")
+                    st.info("Résultat vide.")
                 else:
+                    # --- CORRECTION ICI ---
                     st.dataframe(
-                        df.style.set_properties(**{"text-align": "left"}),
-                        width="content",
+                        df.style.set_properties(**{"text-align": "left"}), 
+                        width="stretch"  # Remplace use_container_width=True
                     )
-
-
 # =====================================================================
 # PARTIE 4 : TABLEAU DE BORD / CARTOGRAPHIE (PLACEHOLDER)
 # =====================================================================
@@ -3419,14 +3116,7 @@ def render_partie_6_ia(tab) -> None:
 # =====================================================================
 def main() -> None:
     """
-    Point d'entrée principal de l'application Streamlit « Paris 2055 ».
-
-    Cette fonction :
-    - configure la page (titre, layout) ;
-    - initialise l'état de session ;
-    - construit la barre latérale (états SQLite/Mongo, caches, clé API, reset) ;
-    - crée les onglets principaux et délègue le rendu à chaque fonction
-      render_partie_X.
+    Point d'entrée principal de l'application.
     """
     st.set_page_config(
         page_title="Paris 2055 - Requêtes et Migration vers MongoDB",
@@ -3438,13 +3128,8 @@ def main() -> None:
 
     st.title("Paris 2055 - Requêtes et Migration vers MongoDB")
 
-    # -----------------------------------------------------------------
-    # BARRE LATÉRALE : ÉTAT, CACHES, CONFIG API, RESET
-    # -----------------------------------------------------------------
     with st.sidebar:
-        # 1. État du système (SQLite + MongoDB)
         st.header("📡 État du Système")
-
         sqlite_exists = os.path.exists(DB_FILE)
         sqlite_icon = "✅" if sqlite_exists else "❌"
         sqlite_msg = "Ready" if sqlite_exists else "Missing"
@@ -3454,16 +3139,11 @@ def main() -> None:
         mongo_color = "red"
 
         try:
-            client_check = pymongo.MongoClient(
-                MONGO_URI,
-                serverSelectionTimeoutMS=500,
-            )
+            client_check = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=500)
             client_check.admin.command("ping")
-
             if MONGO_DB_NAME in client_check.list_database_names():
                 db_check = client_check[MONGO_DB_NAME]
-                count = db_check.lignes.count_documents({})
-                if count > 0:
+                if db_check.lignes.count_documents({}) > 0:
                     mongo_status = "Ready"
                     mongo_icon = "✅"
                     mongo_color = "green"
@@ -3475,7 +3155,6 @@ def main() -> None:
                 mongo_status = "Empty"
                 mongo_icon = "❌"
                 mongo_color = "red"
-
             client_check.close()
         except Exception:
             mongo_status = "Offline"
@@ -3490,10 +3169,7 @@ def main() -> None:
             st.markdown(f":{mongo_color}[**{mongo_icon} {mongo_status}**]")
 
         st.markdown("---")
-
-        # 2. État des caches CSV (SQL et Mongo)
         st.header("🗂️ État des Caches")
-
         if st.session_state.get("queries_sql_executed", False):
             st.success("Cache SQL : **Chargé**", icon="✅")
         else:
@@ -3505,87 +3181,61 @@ def main() -> None:
             st.info("Cache Mongo : **Vide**", icon="⚪")
 
         st.markdown("---")
-
-        # 3. Configuration de la clé API Groq
         st.header("🔑 Config API")
-
-        new_key = st.text_input(
-            label="Groq API Key",
-            value=st.session_state["groq_api_key"],
-            type="password",
-            help="Collez votre clé gsk_... ici.",
-        )
-
+        new_key = st.text_input("Groq API Key", value=st.session_state["groq_api_key"], type="password")
         if new_key != st.session_state["groq_api_key"]:
             st.session_state["groq_api_key"] = new_key
             os.environ["GROQ_API_KEY"] = new_key
             try:
                 set_key(".env", "GROQ_API_KEY", new_key)
                 st.success("Sauvegardé ! ✅")
-            except Exception:
-                # L'échec de sauvegarde dans le .env ne doit pas bloquer l'appli
-                pass
+            except: pass
             time.sleep(0.5)
             st.rerun()
 
         st.markdown("---")
-
-        # 4. Zone de réinitialisation complète (base + caches + état + fichiers)
         st.subheader("🧨 Danger Zone")
 
-        if st.button(
-            "🗑️ DROP DB & RÉSULTATS REQUÊTES",
-            type="primary",
-            use_container_width=True,
-        ):
+        # Bouton Optimisé : Supprime la DB, les CSV ET vide le cache RAM
+        if st.button("🗑️ DROP DB, CSV & CLEAR CACHE", type="primary", use_container_width=True):
             try:
-                # 1. Suppression complète de la base MongoDB Paris2055
+                # 1. Mongo Drop
                 client = pymongo.MongoClient(MONGO_URI)
                 client.drop_database(MONGO_DB_NAME)
                 client.close()
 
-                # 2. Suppression physique des fichiers CSV (SQL et Mongo)
+                # 2. Delete CSVs
                 for folder in [DOSSIER_CSV, DOSSIER_MONGO_CSV]:
                     if os.path.exists(folder):
                         for filename in os.listdir(folder):
                             file_path = os.path.join(folder, filename)
                             try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                            except Exception as e:
-                                print(f"Erreur suppression {file_path}: {e}")
+                                if os.path.isfile(file_path): os.unlink(file_path)
+                            except Exception as e: print(f"Erreur suppression {file_path}: {e}")
 
-                # 3. Réinitialisation des états associés aux résultats
+                # 3. CLEAR STREAMLIT CACHE
+                st.cache_data.clear()
+
+                # 4. Reset Session
                 st.session_state["queries_mongo_executed"] = False
                 st.session_state["resultats_mongo"] = {}
                 st.session_state["queries_sql_executed"] = False
                 st.session_state["resultats_sql"] = {}
-
-                # 4. Réinitialisation des états de migration et d'IA
                 st.session_state["migration_logs"] = []
                 st.session_state["migration_running"] = False
                 st.session_state["migration_done_msg"] = ""
                 st.session_state["ai_json_response"] = None
 
-                st.toast("Base supprimée et caches nettoyés !", icon="💥")
+                st.toast("Tout est nettoyé (RAM + Disque) !", icon="💥")
                 time.sleep(1.5)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Erreur : {exc}")
 
-    # -----------------------------------------------------------------
-    # CORPS PRINCIPAL : ONGLETS FONCTIONNELS
-    # -----------------------------------------------------------------
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        [
-            "Partie 1 : Requêtes SQL",
-            "Partie 2 : Migration",
-            "Partie 3 : Requêtes MongoDB",
-            "Partie 4 : Dashboard - Graphiques",
-            "Partie 5 : Comparaison des résultats",
-            "Partie 6 : Assistant requêtes (IA)",
-        ],
-    )
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "Partie 1 : Requêtes SQL", "Partie 2 : Migration", "Partie 3 : Requêtes MongoDB",
+        "Partie 4 : Dashboard", "Partie 5 : Comparaison", "Partie 6 : Assistant IA"
+    ])
 
     render_partie_1_sqlite(tab1)
     render_partie_2_migration(tab2)
