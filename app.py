@@ -3128,44 +3128,71 @@ def main() -> None:
 
         st.markdown("---")
         
-        # --- BLOC DANGER ZONE (Ton design original) ---
-        st.subheader("🧨 Danger Zone")
+        # --- BLOC DANGER ZONE SÉCURISÉ ---
+        with st.expander("🧨 Danger Zone", expanded=False):
+            st.error("Zone critique : Actions irréversibles")
+            
+            st.write(
+                "Cette action va :"
+                "\n- Supprimer la base MongoDB 'Paris2055'"
+                "\n- Effacer tous les fichiers CSV générés"
+                "\n- Vider le cache de l'application"
+            )
 
-        # Bouton Optimisé : Supprime la DB, les CSV ET vide le cache RAM
-        if st.button("🗑️ DROP DB, CSV & CLEAR CACHE", type="primary", use_container_width=True):
-            try:
-                # 1. Mongo Drop
-                client = pymongo.MongoClient(MONGO_URI)
-                client.drop_database(MONGO_DB_NAME)
-                client.close()
+            # 1. Mécanisme de sécurité : Checkbox
+            confirm_delete = st.checkbox(
+                "Je confirme vouloir tout supprimer", 
+                key="security_check",
+                help="Cochez cette case pour déverrouiller le bouton de suppression."
+            )
 
-                # 2. Delete CSVs
-                for folder in [DOSSIER_CSV, DOSSIER_MONGO_CSV]:
-                    if os.path.exists(folder):
-                        for filename in os.listdir(folder):
-                            file_path = os.path.join(folder, filename)
-                            try:
-                                if os.path.isfile(file_path): os.unlink(file_path)
-                            except Exception as e: print(f"Erreur suppression {file_path}: {e}")
+            # 2. Le bouton est désactivé (disabled) tant que la case n'est pas cochée
+            if st.button(
+                "🗑️ RÉINITIALISER L'APPLICATION", 
+                type="primary", 
+                use_container_width=True, 
+                disabled=not confirm_delete  # C'est ici que la magie opère
+            ):
+                with st.spinner("Nettoyage complet en cours..."):
+                    try:
+                        # A. Suppression MongoDB
+                        client = pymongo.MongoClient(MONGO_URI)
+                        if MONGO_DB_NAME in client.list_database_names():
+                            client.drop_database(MONGO_DB_NAME)
+                        client.close()
 
-                # 3. CLEAR STREAMLIT CACHE
-                st.cache_data.clear()
+                        # B. Suppression CSV
+                        for folder in [DOSSIER_CSV, DOSSIER_MONGO_CSV]:
+                            if os.path.exists(folder):
+                                for filename in os.listdir(folder):
+                                    file_path = os.path.join(folder, filename)
+                                    try:
+                                        if os.path.isfile(file_path): 
+                                            os.unlink(file_path)
+                                    except Exception as e: 
+                                        print(f"Erreur suppression {file_path}: {e}")
 
-                # 4. Reset Session
-                st.session_state["queries_mongo_executed"] = False
-                st.session_state["resultats_mongo"] = {}
-                st.session_state["queries_sql_executed"] = False
-                st.session_state["resultats_sql"] = {}
-                st.session_state["migration_logs"] = []
-                st.session_state["migration_running"] = False
-                st.session_state["migration_done_msg"] = ""
-                st.session_state["ai_json_response"] = None
+                        # C. Reset Session & Cache Streamlit
+                        st.cache_data.clear()
+                        
+                        # Réinitialisation des clés de session
+                        keys_to_reset = [
+                            "queries_mongo_executed", "resultats_mongo",
+                            "queries_sql_executed", "resultats_sql",
+                            "migration_logs", "migration_running",
+                            "migration_done_msg", "ai_json_response",
+                            "initialized" # On force la réinit au prochain run
+                        ]
+                        for key in keys_to_reset:
+                            if key in st.session_state:
+                                del st.session_state[key]
 
-                st.toast("Tout est nettoyé (RAM + Disque) !", icon="💥")
-                time.sleep(1.5)
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Erreur : {exc}")
+                        st.toast("Application remise à neuf ! 💥", icon="✅")
+                        time.sleep(2)
+                        st.rerun()
+                        
+                    except Exception as exc:
+                        st.error(f"Erreur lors du nettoyage : {exc}")
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "Partie 1 : Requêtes SQL", 
