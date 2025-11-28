@@ -5,7 +5,7 @@
 [![MongoDB](https://img.shields.io/badge/MongoDB-4EA94B?style=for-the-badge&logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Groq AI](https://img.shields.io/badge/AI-Groq_Llama3.3-orange?style=for-the-badge)](https://groq.com/)
 
-> **Projet pédagogique** - BUT 3 Informatique, Parcours Sciences des Données (2025)
+> **Projet pédagogique** - BUT 3 Sciences des Données (2025)
 
 ---
 
@@ -66,22 +66,37 @@ Migrer les données depuis un modèle **relationnel normalisé** (14 tables SQLi
 
 ```bash
 # 1. Cloner le dépôt (ou télécharger le projet)
-cd chemin/vers/le/projet
+git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
+cd mongoDB_ST_QC_CA_JF
 
 # 2. Créer un environnement virtuel (recommandé)
 python -m venv venv
 
 # 3. Activer l'environnement virtuel
-# Windows :
 .\venv\Scripts\activate
-# macOS/Linux :
-source venv/bin/activate
 
 # 4. Installer les dépendances
 pip install -r requirements.txt
 ```
 
+**macOs, Linux**
+
 ### Configuration (.env)
+
+```bash
+# 1. Cloner le dépôt (ou télécharger le projet)
+git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
+cd mongoDB_ST_QC_CA_JF
+
+# 2. Créer un environnement virtuel (recommandé)
+python -m venv venv
+
+# 3. Activer l'environnement virtuel
+source venv/bin/activate
+
+# 4. Installer les dépendances
+pip install -r requirements.txt
+```
 
 Créez un fichier `.env` à la racine du projet :
 
@@ -195,9 +210,9 @@ SQLite (Modèle Relationnel)          MongoDB (Modèle Document)
 
 | Collection | Documents | Structure Principale |
 |------------|-----------|---------------------|
-| `lignes` | ~50 docs | Lignes avec arrêts, horaires, trafic, incidents, caches |
-| `quartiers` | ~20 docs | Quartiers avec géométrie GeoJSON (Polygon) et arrêts |
-| `capteurs` | ~200 docs | Capteurs avec position GeoJSON (Point) et mesures |
+| `lignes` | ~100 docs | Lignes avec arrêts, horaires, trafic, incidents, caches |
+| `quartiers` | ~100 docs | Quartiers avec géométrie GeoJSON (Polygon) et arrêts |
+| `capteurs` | ~4100 docs | Capteurs avec position GeoJSON (Point) et mesures |
 
 **Index créés automatiquement :**
 
@@ -396,24 +411,13 @@ Ce projet a été développé dans le cadre du **BUT 3 Informatique - Parcours S
 
 ## 📜 Licence
 
-Projet pédagogique - BUT 3 Informatique (2025)
+Projet pédagogique - BUT 3 Sciences des Données (2025)
 
 ---
 
 ## 🤝 Contributeurs
 
 - Julien Forestier, Charles Auvrai, Quentin Chabot.
-
----
-
-## 🐛 Problèmes Connus & Solutions
-
-| Problème | Solution |
-|----------|----------|
-| **MongoDB Offline** dans la sidebar | Vérifiez que MongoDB est démarré (`mongod`) ou que l'URI Atlas est correcte |
-| **Clé API Groq invalide** (Partie 6) | Vérifiez que la clé commence par `gsk_` et est active sur console.groq.com |
-| **Erreur "Out of Memory"** pendant la migration | Réduisez `chunk_size` dans `load_tables()` (ligne ~418 de app.py) |
-| **Résultats SQL vs Mongo divergents** (Partie 5) | Vérifiez que la migration s'est terminée sans erreur (logs de la Partie 2) |
 
 ---
 
