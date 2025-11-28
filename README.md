@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 ### Configuration (.env)
 
-Créez un fichier `.env` à la racine du projet :
+Modifiez / créez le fichier `.env` à la racine du projet :
 
 ```env
 # Clé API Groq (obligatoire pour l'assistant IA - Partie 6)
