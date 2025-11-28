@@ -81,8 +81,6 @@ pip install -r requirements.txt
 
 **macOs, Linux**
 
-### Configuration (.env)
-
 ```bash
 # 1. Cloner le dépôt (ou télécharger le projet)
 git clone https://github.com/qurnt1/mongoDB_ST_QC_CA_JF.git
@@ -97,6 +95,8 @@ source venv/bin/activate
 # 4. Installer les dépendances
 pip install -r requirements.txt
 ```
+
+### Configuration (.env)
 
 Créez un fichier `.env` à la racine du projet :
 
