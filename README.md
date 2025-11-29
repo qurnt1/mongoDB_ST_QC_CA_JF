@@ -379,10 +379,18 @@ mongoDB_ST_QC_CA_JF/
 │   ├── sqlite/
 │   │   ├── db/
 │   │   │   └── paris2055.sqlite    # Base SQLite source (relationnelle)
+│   │   │
+│   │   ├── requetes_SQLite.py      # Fichier python des Requêtes SQL
 │   │   └── resultats_requetes_sqlite/  # CSV des résultats SQL
 │   │
+│   │
 │   └── mongodb/
-│       ├── collections/            # Backup JSON des collections MongoDB
+│       ├── db/                     # Backup JSON des collections MongoDB
+│       │   ├── Collection_capteurs.json         
+│       │   ├── Collection_lignes.json
+│       │   └── Collection_quartiers.json
+│       │
+│       ├── requetes_MongoDB.py      # Fichier python des Requêtes MongoDB
 │       └── resultats_requetes_mongodb/  # CSV des résultats MongoDB
 │
 └── README.md                       # Ce fichier

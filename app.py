@@ -36,7 +36,7 @@ DB_FILE = os.path.join(DOSSIER_DATA, DOSSIER_SQLITE, "db", "paris2055.sqlite")
 
 # Dossiers d’export CSV (résultats des requêtes SQL et MongoDB)
 DOSSIER_CSV = "./data/sqlite/resultats_requetes_sqlite/"
-DOSSIER_JSON = os.path.join(DOSSIER_DATA, "mongodb", "collections")
+DOSSIER_JSON = os.path.join(DOSSIER_DATA, "mongodb", "db")
 DOSSIER_MONGO_CSV = os.path.join(
     DOSSIER_DATA,
     "mongodb",
