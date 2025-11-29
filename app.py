@@ -21,7 +21,7 @@ from dotenv import load_dotenv, set_key, find_dotenv
 
 # Imports des autres modules python (programmes des requêtes SQL et MongoDB)
 from data.sqlite.requetes_SQLite import executer_requetes_sql_module
-from data.mongodb.requetes_MongoDB import QUERY_MONGO_FUNCS, aggregate_to_df # aggregate_to_df utile si utilisé ailleurs
+from data.mongodb.requetes_MongoDB import QUERY_MONGO_FUNCS, aggregate_to_df 
 
 # ======================================================================
 # Partie 1 - Constantes de chemins et paramètres généraux
