@@ -1,7 +1,7 @@
 # --- Fichiers Spécifiques au Projet (SGBDR -> Mongo) ---
 
 # 1. Exclure les Collections MongoDB (JSON)
-data/mongodb/collections/
+data/mongodb/db/
 
 # 2. Exclure les Résultats des requêtes (CSV)
 data/mongodb/resultats_requetes_mongodb/
