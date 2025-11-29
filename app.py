@@ -233,11 +233,7 @@ def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
 # UTILITAIRES MONGO / ETL (COUCHE DATA, HORS UI)
 # =====================================================================
 
-def sauvegarder_collection_json(
-    nom_collection: str,
-    data: List[Dict],
-    log_fn: Callable[[str, bool], None],
-) -> str:
+def sauvegarder_collection_json(nom_collection: str,data: List[Dict],log_fn: Callable[[str, bool], None],) -> str:
     """
     Sérialise une collection métier dans un fichier JSON sur disque.
 
@@ -266,8 +262,8 @@ def sauvegarder_collection_json(
 
     try:
         with open(full_path, "w", encoding="utf-8") as json_file:
-            # default=str : tolère les types non sérialisables nativement (datetime, Timestamp, etc.).
-            json.dump(data, json_file, ensure_ascii=False, default=str)
+            # AJOUT DE indent=4 ICI 👇
+            json.dump(data, json_file, ensure_ascii=False, default=str, indent=4)
 
         log_fn(
             f"   ✅ [JSON] Fichier écrit : {total:,} documents.",
