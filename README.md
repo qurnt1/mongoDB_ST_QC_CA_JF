@@ -76,7 +76,7 @@ python -m venv venv
 .\venv\Scripts\activate
 
 # 4. Créer le fichier .env
-(echo "GROQ_API_KEY=''" ; echo "MONGO_URI=''") > .env
+@("GROQ_API_KEY=''", "MONGO_URI=''") | Set-Content .env
 
 # 5. Installer les dépendances
 pip install -r requirements.txt
