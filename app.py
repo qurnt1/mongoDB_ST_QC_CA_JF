@@ -59,8 +59,6 @@ def get_current_mongo_uri() -> str:
     1. Valeur stockée dans la session Streamlit (modifiée via la sidebar).
     2. Variable d'environnement MONGO_URI (fichier .env ou environnement système).
     3. Valeur par défaut locale "mongodb://127.0.0.1:27017/".
-
-    Cette fonction est appelée au chargement du module pour initialiser MONGO_URI.
     """
     if "mongo_uri" in st.session_state:
         return st.session_state["mongo_uri"]
@@ -74,6 +72,7 @@ MONGO_DB_NAME = "Paris2055"
 # =====================================================================
 # PARTIE 2 - CONTEXTE DE SCHÉMA POUR L’ASSISTANT IA
 # =====================================================================
+
 
 def charger_prompt_context(filepath: str) -> str:
     """
@@ -110,6 +109,7 @@ SCHEMA_CONTEXT = charger_prompt_context(CHEMIN_PROMPT)
 # =====================================================================
 # PARTIE 3 - OUTILS GÉNÉRIQUES (SANS DÉPENDANCE À SQL/MONGO/UI)
 # =====================================================================
+
 
 def log_progress(
     current: int,
@@ -155,6 +155,17 @@ def log_progress(
     pct = (current / total) * 100
     message = f"    >> {prefix} : {current:,} / {total:,} ({pct:.1f}%)"
     log_fn(message, replace_last=True)
+
+
+def console_log(message: str, replace_last: bool = False) -> None:
+    """
+    Fonction de log par défaut (console).
+
+    Utilisée lorsque aucune fonction spécifique (Streamlit, fichier, etc.)
+    n'est fournie. Le paramètre replace_last est ignoré mais conservé pour
+    rester compatible avec les autres fonctions de log.
+    """
+    print(message)
 
 
 def parse_geojson_geometry(geojson_str: Optional[str]) -> Optional[Dict]:
@@ -245,6 +256,7 @@ def infer_unite_from_type(type_capteur: Optional[str]) -> Optional[str]:
 # PARTIE 4 - ÉTAPE ETL : JSON / INSERTION MONGO / CONSTRUCTION DOCUMENTS
 # =====================================================================
 
+
 def sauvegarder_collection_json(
     nom_collection: str,
     data: List[Dict],
@@ -289,7 +301,10 @@ def sauvegarder_collection_json(
         )
         return file_name
     except Exception as exc:
-        log_fn(f"   💥 [ERREUR] Échec lors de la sauvegarde JSON : {exc}", replace_last=False)
+        log_fn(
+            f"   💥 [ERREUR] Échec lors de la sauvegarde JSON : {exc}",
+            replace_last=False,
+        )
         raise
 
 
@@ -298,7 +313,7 @@ def insert_with_progress(
     docs: List[Dict],
     label: str,
     batch_size: int = 25000,
-    log_fn: Callable[[str, bool], None] = print,
+    log_fn: Callable[[str, bool], None] = console_log,
 ) -> None:
     """
     Insère une liste de documents dans une collection MongoDB par paquets.
@@ -317,7 +332,7 @@ def insert_with_progress(
     batch_size : int
         Taille des lots d'insertion.
     log_fn : Callable[[str, bool], None]
-        Fonction de log. Par défaut, print().
+        Fonction de log. Par défaut, console_log().
     """
     total = len(docs)
     if total == 0:
@@ -1011,7 +1026,10 @@ def migrer_sqlite_vers_mongo(
 
     def process_step(
         label: str,
-        build_func: Callable[[Dict[str, pd.DataFrame], Callable[[str, bool], None]], List[Dict]],
+        build_func: Callable[
+            [Dict[str, pd.DataFrame], Callable[[str, bool], None]],
+            List[Dict],
+        ],
         tables: Dict[str, pd.DataFrame],
     ) -> None:
         """
@@ -1197,31 +1215,42 @@ def executer_toutes_les_requetes() -> Dict[str, pd.DataFrame]:
 # PARTIE 6 - MONGODB MÉTIER : EXÉCUTION DES REQUÊTES A → N
 # =====================================================================
 
+
 @st.cache_data(show_spinner=False)
-def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
+def executer_toutes_les_requetes_mongo(
+    mongo_uri: str,
+    db_name: str,
+) -> Dict[str, pd.DataFrame]:
     """
     Exécute l'ensemble des requêtes MongoDB métier définies dans QUERY_MONGO_FUNCS.
 
     Pour chaque code de requête (A → N), la fonction correspondante est appelée
-    avec la base MongoDB Paris2055 puis convertit le résultat en DataFrame.
+    avec la base MongoDB cible puis convertit son résultat en DataFrame.
+
+    Paramètres
+    ----------
+    mongo_uri : str
+        URI du serveur MongoDB à utiliser.
+    db_name : str
+        Nom de la base de données MongoDB à interroger.
 
     Retour
     ------
     dict[str, pandas.DataFrame]
         Dictionnaire code de requête → DataFrame résultat.
     """
-    client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+    client = pymongo.MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
     resultats: Dict[str, pd.DataFrame] = {}
 
     try:
         client.admin.command("ping")
-        if MONGO_DB_NAME not in client.list_database_names():
+        if db_name not in client.list_database_names():
             error_df = pd.DataFrame(
-                [{"erreur": f"Base '{MONGO_DB_NAME}' inexistante."}]
+                [{"erreur": f"Base '{db_name}' inexistante."}]
             )
             return {code: error_df for code in QUERY_MONGO_FUNCS.keys()}
 
-        db = client[MONGO_DB_NAME]
+        db = client[db_name]
 
         for code, func in QUERY_MONGO_FUNCS.items():
             try:
@@ -1245,7 +1274,11 @@ def executer_toutes_les_requetes_mongo() -> Dict[str, pd.DataFrame]:
 # PARTIE 7 - PERSISTANCE CSV (SQL & MONGODB)
 # =====================================================================
 
-def forcer_ecriture_csv_sql(resultats: Dict[str, pd.DataFrame]) -> None:
+
+def forcer_ecriture_csv_sql(
+    resultats: Dict[str, pd.DataFrame],
+    log_fn: Callable[[str, bool], None] = console_log,
+) -> None:
     """
     Sauvegarde sur disque les résultats des requêtes SQL au format CSV.
 
@@ -1256,20 +1289,25 @@ def forcer_ecriture_csv_sql(resultats: Dict[str, pd.DataFrame]) -> None:
     ----------
     resultats : dict[str, pandas.DataFrame]
         Résultats produits par executer_toutes_les_requetes().
+    log_fn : Callable[[str, bool], None]
+        Fonction de log à utiliser (console par défaut).
     """
     os.makedirs(DOSSIER_CSV, exist_ok=True)
-    print("💾 Sauvegarde des résultats SQL au format CSV...")
+    log_fn("💾 Sauvegarde des résultats SQL au format CSV...", False)
     for code, df in resultats.items():
         nom_fichier = f"resultat_req_{code.lower()}.csv"
         full_path = os.path.join(DOSSIER_CSV, nom_fichier)
         try:
             df.to_csv(full_path, index=False, encoding="utf-8-sig")
         except Exception as exc:
-            print(f"Erreur lors de l'écriture de {nom_fichier} : {exc}")
-    print("✅ Fichiers CSV SQL générés.")
+            log_fn(f"Erreur lors de l'écriture de {nom_fichier} : {exc}", False)
+    log_fn("✅ Fichiers CSV SQL générés.", False)
 
 
-def forcer_ecriture_csv_mongo(resultats: Dict[str, pd.DataFrame]) -> None:
+def forcer_ecriture_csv_mongo(
+    resultats: Dict[str, pd.DataFrame],
+    log_fn: Callable[[str, bool], None] = console_log,
+) -> None:
     """
     Sauvegarde sur disque les résultats des requêtes MongoDB au format CSV.
 
@@ -1277,17 +1315,19 @@ def forcer_ecriture_csv_mongo(resultats: Dict[str, pd.DataFrame]) -> None:
     ----------
     resultats : dict[str, pandas.DataFrame]
         Dictionnaire code → DataFrame, produit par executer_toutes_les_requetes_mongo().
+    log_fn : Callable[[str, bool], None]
+        Fonction de log à utiliser (console par défaut).
     """
     os.makedirs(DOSSIER_MONGO_CSV, exist_ok=True)
-    print("💾 Sauvegarde des résultats MongoDB au format CSV...")
+    log_fn("💾 Sauvegarde des résultats MongoDB au format CSV...", False)
     for code, df in resultats.items():
         nom_fichier = f"resultat_req_{code.lower()}.csv"
         full_path = os.path.join(DOSSIER_MONGO_CSV, nom_fichier)
         try:
             df.to_csv(full_path, index=False, encoding="utf-8-sig")
         except Exception as exc:
-            print(f"Erreur lors de l'écriture de {nom_fichier} : {exc}")
-    print("✅ Fichiers CSV MongoDB générés.")
+            log_fn(f"Erreur lors de l'écriture de {nom_fichier} : {exc}", False)
+    log_fn("✅ Fichiers CSV MongoDB générés.", False)
 
 
 def tenter_chargement_depuis_csv(dossier_cible: str) -> Dict[str, pd.DataFrame]:
@@ -1363,7 +1403,7 @@ def init_session_state() -> None:
         if data_sql:
             st.session_state["resultats_sql"] = data_sql
             st.session_state["queries_sql_executed"] = True
-            print("✅ Résultats SQL restaurés depuis les fichiers CSV.")
+            console_log("✅ Résultats SQL restaurés depuis les fichiers CSV.")
         else:
             st.session_state["resultats_sql"] = {}
             st.session_state["queries_sql_executed"] = False
@@ -1374,7 +1414,7 @@ def init_session_state() -> None:
         if data_mongo:
             st.session_state["resultats_mongo"] = data_mongo
             st.session_state["queries_mongo_executed"] = True
-            print("✅ Résultats MongoDB restaurés depuis les fichiers CSV.")
+            console_log("✅ Résultats MongoDB restaurés depuis les fichiers CSV.")
         else:
             st.session_state["resultats_mongo"] = {}
             st.session_state["queries_mongo_executed"] = False
@@ -1391,6 +1431,7 @@ def init_session_state() -> None:
 # =====================================================================
 # PARTIE 9 - CONTRÔLE DE LA CONNECTIVITÉ MONGODB
 # =====================================================================
+
 
 def check_connexion_details() -> tuple[bool, bool]:
     """
@@ -1465,6 +1506,7 @@ def streamlit_migration_log(message: str, replace_last: bool = False) -> None:
 # =====================================================================
 # PARTIE 11 - UI STREAMLIT : PARTIES 1 À 5 (SQL / MIGRATION / MONGO / DASH / COMPARAISON)
 # =====================================================================
+
 
 def render_partie_1_sqlite(tab) -> None:
     """
@@ -1568,7 +1610,9 @@ def render_partie_2_migration(tab) -> None:
         MIGRATION_LOG_PLACEHOLDER = st.empty()
 
         if st.session_state.get("migration_running", False):
-            MIGRATION_LOG_PLACEHOLDER.code("Initialisation de la migration...", language="text")
+            MIGRATION_LOG_PLACEHOLDER.code(
+                "Initialisation de la migration...", language="text"
+            )
 
             with col_status:
                 with st.spinner("Migration en cours, merci de patienter..."):
@@ -1623,7 +1667,8 @@ def render_partie_3_mongo(tab) -> None:
 
         if st.button("Executer & Sauvegarder CSV Mongo", key="btn_mongo_run", disabled=btn_disabled):
             with st.spinner("Exécution des requêtes MongoDB et écriture des CSV..."):
-                res = executer_toutes_les_requetes_mongo()
+                current_uri = st.session_state.get("mongo_uri", MONGO_URI)
+                res = executer_toutes_les_requetes_mongo(current_uri, MONGO_DB_NAME)
                 forcer_ecriture_csv_mongo(res)
                 st.session_state["resultats_mongo"] = res
                 st.session_state["queries_mongo_executed"] = True
@@ -1833,6 +1878,7 @@ def render_partie_5_comparaison(tab) -> None:
 # PARTIE 12 - ASSISTANT IA (GROQ / LLAMA 3.3)
 # =====================================================================
 
+
 def interroger_groq(question: str) -> tuple[Optional[Dict], Optional[str]]:
     """
     Appelle l'API Groq (modèle Llama 3.3) pour générer un pipeline MongoDB en JSON.
@@ -1996,8 +2042,6 @@ def render_partie_6_ia(tab) -> None:
     """
     QUESTION_BUTTONS = [
         "la moyenne des retards (en minutes) pour chaque ligne de transport.",
-        "le nombre moyen de passagers transportés par jour pour chaque ligne.",
-        "le taux d'incidents (en pourcentage) pour chaque ligne, basé sur le nombre de trajets ayant signalé un incident.",
         "les 5 quartiers ayant la moyenne de niveau de bruit (en dB) la plus élevée, basée sur les capteurs de bruit aux arrêts.",
     ]
 
@@ -2094,7 +2138,9 @@ def render_partie_6_ia(tab) -> None:
                     )
                     return
 
-                with st.spinner(f"Exécution du pipeline sur la collection '{collection_cible}'..."):
+                with st.spinner(
+                    f"Exécution du pipeline sur la collection '{collection_cible}'..."
+                ):
                     try:
                         client = pymongo.MongoClient(MONGO_URI)
                         db = client[MONGO_DB_NAME]
@@ -2137,6 +2183,7 @@ def render_partie_6_ia(tab) -> None:
 # PARTIE 13 - FONCTION PRINCIPALE STREAMLIT
 # =====================================================================
 
+
 def main() -> None:
     """
     Point d'entrée principal de l'application Streamlit.
@@ -2173,7 +2220,9 @@ def main() -> None:
         current_uri = st.session_state.get("mongo_uri", MONGO_URI)
 
         try:
-            client_check = pymongo.MongoClient(current_uri, serverSelectionTimeoutMS=500)
+            client_check = pymongo.MongoClient(
+                current_uri, serverSelectionTimeoutMS=500
+            )
             client_check.admin.command("ping")
             if MONGO_DB_NAME in client_check.list_database_names():
                 db_check = client_check[MONGO_DB_NAME]
@@ -2302,7 +2351,9 @@ def main() -> None:
                                         if os.path.isfile(file_path):
                                             os.unlink(file_path)
                                     except Exception as exc:
-                                        print(f"Erreur lors de la suppression de {file_path} : {exc}")
+                                        console_log(
+                                            f"Erreur lors de la suppression de {file_path} : {exc}"
+                                        )
 
                         st.cache_data.clear()
 

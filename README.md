@@ -218,7 +218,7 @@ SQLite (Modèle Relationnel)          MongoDB (Modèle Document)
 |------------|-----------|---------------------|
 | `lignes` | ~100 docs | Lignes avec arrêts, horaires, trafic, incidents, caches |
 | `quartiers` | ~100 docs | Quartiers avec géométrie GeoJSON (Polygon) et arrêts |
-| `capteurs` | ~4100 docs | Capteurs avec position GeoJSON (Point) et mesures |
+| `capteurs` | ~4630 docs | Capteurs avec position GeoJSON (Point) et mesures |
 
 **Index créés automatiquement :**
 
