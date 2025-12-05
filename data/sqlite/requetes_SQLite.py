@@ -91,7 +91,11 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
             LEFT JOIN Incident I ON T.id_trafic = I.id_trafic
             WHERE T.retard_minutes > 10 
             AND I.id_incident IS NULL
-            ORDER BY T.retard_minutes DESC
+            ORDER BY 
+                T.retard_minutes DESC,
+                T.horodatage DESC,
+                L.type DESC,
+                L.nom_ligne DESC
         """,
 
         "G": """
