@@ -118,31 +118,34 @@ def query_F_mongo(db) -> pd.DataFrame:
     Requête F : Lignes avec retards > 10 min sans incident.
     """
     pipeline = [
-        # 1. INDISPENSABLE : On éclate le tableau trafic pour avoir 1 ligne par retard
         {"$unwind": "$trafic"},
-
-        # 2. Filtre : Retard > 10 min ET Pas d'incident
         {"$match": {
             "trafic.retard_minutes": {"$gt": 10},
             "$or": [
                 {"trafic.incidents": {"$eq": []}},
                 {"trafic.incidents": {"$exists": False}},
-                {"trafic.incidents": None}
-            ]
+                {"trafic.incidents": None},
+            ],
         }},
-
-        # 3. Projection pour matcher EXACTEMENT les colonnes SQL
         {"$project": {
             "_id": 0,
             "Ligne": "$nom_ligne",
             "Type": "$type",
             "Retard (min)": "$trafic.retard_minutes",
-            "Date/Heure": "$trafic.horodatage"
+            "Date/Heure": "$trafic.horodatage",
         }},
-
-        # 4. Tri pour s'aligner avec le SQL (ORDER BY retard DESC)
-        {"$sort": {"Retard (min)": -1}}
+        {"$sort": {
+            "Retard (min)": -1,
+            "Date/Heure": -1,
+            "Type": -1,
+            "Ligne": -1,
+        }},
     ]
+
+    result = list(db.lignes.aggregate(pipeline))
+    return pd.DataFrame(result)
+
+
     
     # Assure-toi que 'aggregate_to_df' est bien importé ou défini dans ce fichier
     df = aggregate_to_df(db.lignes, pipeline)
