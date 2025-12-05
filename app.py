@@ -60,9 +60,17 @@ def get_current_mongo_uri() -> str:
     2. Variable d'environnement MONGO_URI (fichier .env ou environnement système).
     3. Valeur par défaut locale "mongodb://127.0.0.1:27017/".
     """
-    if "mongo_uri" in st.session_state:
+    # 1. Priorité Session Streamlit
+    if "mongo_uri" in st.session_state and st.session_state["mongo_uri"]:
         return st.session_state["mongo_uri"]
-    return os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
+
+    # 2. Priorité Variable d'environnement (avec gestion chaîne vide)
+    env_uri = os.getenv("MONGO_URI")
+    if env_uri and env_uri.strip():  # Vérifie que ce n'est pas None et pas vide/espaces
+        return env_uri
+
+    # 3. Valeur par défaut locale
+    return "mongodb://127.0.0.1:27017/"
 
 
 # URI et nom de base MongoDB par défaut (peuvent être modifiés via l'IHM)
