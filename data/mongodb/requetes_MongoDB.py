@@ -111,16 +111,19 @@ def query_E_mongo(db) -> pd.DataFrame:
     df = aggregate_to_df(db.quartiers, pipeline)
     return df[["nom", "moyenne_bruit_db"]] if not df.empty else df
 
+# Fichier : data/mongodb/requetes_MongoDB.py
+
 def query_F_mongo(db) -> pd.DataFrame:
+    """
+    Requête F : Lignes avec retards > 10 min sans incident.
+    """
     pipeline = [
-        # 1. On éclate le tableau 'trafic' : 
-        # Si une ligne a 1000 entrées de trafic, on obtient temporairement 1000 documents.
+        # 1. INDISPENSABLE : On éclate le tableau trafic pour avoir 1 ligne par retard
         {"$unwind": "$trafic"},
 
-        # 2. On filtre sur les documents éclatés (niveau trajet)
+        # 2. Filtre : Retard > 10 min ET Pas d'incident
         {"$match": {
             "trafic.retard_minutes": {"$gt": 10},
-            # Vérifie que le tableau incidents est vide, null ou inexistant
             "$or": [
                 {"trafic.incidents": {"$eq": []}},
                 {"trafic.incidents": {"$exists": False}},
@@ -128,16 +131,20 @@ def query_F_mongo(db) -> pd.DataFrame:
             ]
         }},
 
-        # 3. Projection pour matcher EXACTEMENT les noms de colonnes du SQL
+        # 3. Projection pour matcher EXACTEMENT les colonnes SQL
         {"$project": {
             "_id": 0,
             "Ligne": "$nom_ligne",
             "Type": "$type",
             "Retard (min)": "$trafic.retard_minutes",
             "Date/Heure": "$trafic.horodatage"
-        }}
+        }},
+
+        # 4. Tri pour s'aligner avec le SQL (ORDER BY retard DESC)
+        {"$sort": {"Retard (min)": -1}}
     ]
     
+    # Assure-toi que 'aggregate_to_df' est bien importé ou défini dans ce fichier
     df = aggregate_to_df(db.lignes, pipeline)
     return df
 
