@@ -728,9 +728,15 @@ def build_quartiers_docs(
             replace_last=False,
         )
         df_aq_full = df_aq.merge(
-            df_a[["id_arret", "nom", "id_ligne"]].rename(
-                columns={"nom": "nom_arret"},
-            ),
+            df_a[
+                [
+                    "id_arret",
+                    "nom",
+                    "id_ligne",
+                    "latitude",
+                    "longitude",
+                ]
+            ].rename(columns={"nom": "nom_arret"}),
             on="id_arret",
             how="left",
         )
@@ -751,6 +757,8 @@ def build_quartiers_docs(
                     "nom_arret",
                     "id_ligne",
                     "nom_ligne",
+                    "latitude",
+                    "longitude",
                 ]
             ].drop_duplicates("id_arret")
 
@@ -762,11 +770,20 @@ def build_quartiers_docs(
                     "id_arret": int(row["id_arret"]),
                     "nom": row["nom_arret"],
                 }
+
+                # Ligne associée
                 if pd.notnull(row.get("id_ligne")):
                     stop_doc["id_ligne"] = int(row["id_ligne"])
                 if pd.notnull(row.get("nom_ligne")):
                     stop_doc["nom_ligne"] = row["nom_ligne"]
+
+                # Coordonnées de l'arrêt
+                if pd.notnull(row.get("latitude")) and pd.notnull(row.get("longitude")):
+                    stop_doc["latitude"] = float(row["latitude"])
+                    stop_doc["longitude"] = float(row["longitude"])
+
                 stops.append(stop_doc)
+
 
             arrets_by_quartier[id_quartier] = stops
             log_progress(
