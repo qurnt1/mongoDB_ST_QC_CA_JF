@@ -2399,4 +2399,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    print("le premier lancement de l'application peut prendre du temps")
     main()
