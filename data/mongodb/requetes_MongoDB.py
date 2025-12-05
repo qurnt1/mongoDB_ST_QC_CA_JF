@@ -113,16 +113,33 @@ def query_E_mongo(db) -> pd.DataFrame:
 
 def query_F_mongo(db) -> pd.DataFrame:
     pipeline = [
-        {"$project": {
-            "nom_ligne": 1,
-            "has_big_delay": {"$gt": [{"$size": {"$filter": {"input": {"$ifNull": ["$trafic", []]}, "as": "t", "cond": {"$gt": ["$$t.retard_minutes", 10]}}}}, 0]},
-            "has_incident": {"$gt": [{"$size": {"$filter": {"input": {"$ifNull": ["$trafic", []]}, "as": "t", "cond": {"$gt": [{"$size": {"$ifNull": ["$$t.incidents", []]}}, 0]}}}}, 0]}
+        # 1. On éclate le tableau 'trafic' : 
+        # Si une ligne a 1000 entrées de trafic, on obtient temporairement 1000 documents.
+        {"$unwind": "$trafic"},
+
+        # 2. On filtre sur les documents éclatés (niveau trajet)
+        {"$match": {
+            "trafic.retard_minutes": {"$gt": 10},
+            # Vérifie que le tableau incidents est vide, null ou inexistant
+            "$or": [
+                {"trafic.incidents": {"$eq": []}},
+                {"trafic.incidents": {"$exists": False}},
+                {"trafic.incidents": None}
+            ]
         }},
-        {"$match": {"has_big_delay": True, "has_incident": False}},
-        {"$project": {"_id": 0, "nom_ligne": 1}}
+
+        # 3. Projection pour matcher EXACTEMENT les noms de colonnes du SQL
+        {"$project": {
+            "_id": 0,
+            "Ligne": "$nom_ligne",
+            "Type": "$type",
+            "Retard (min)": "$trafic.retard_minutes",
+            "Date/Heure": "$trafic.horodatage"
+        }}
     ]
+    
     df = aggregate_to_df(db.lignes, pipeline)
-    return df[["nom_ligne"]] if not df.empty else df
+    return df
 
 def query_G_mongo(db) -> pd.DataFrame:
     pipeline = [

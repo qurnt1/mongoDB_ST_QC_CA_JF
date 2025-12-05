@@ -33,16 +33,16 @@ Champs de base :
 
 Caches / champs dérivés (à utiliser en priorité) :
 - stats_trafic : {
-    "total_retard"     : float,  # somme des retards (minutes) sur tous les trajets de la ligne
-    "nb_trajets"       : int,    # nombre total de trajets enregistrés
-    "moyenne_precalc"  : float   # moyenne des retards (minutes) = total_retard / nb_trajets
+    "total_retard"      : float,  # somme des retards (minutes) sur tous les trajets de la ligne
+    "nb_trajets"        : int,    # nombre total de trajets enregistrés
+    "moyenne_precalc"   : float   # moyenne des retards (minutes) = total_retard / nb_trajets
   }
 
 - vehicules_cache : [
     {
-      "id_vehicule"       : int,
-      "immatriculation"   : string,
-      "type_vehicule"     : string | null,          # ex : "Electrique", "Diesel"
+      "id_vehicule"        : int,
+      "immatriculation"    : string,
+      "type_vehicule"      : string | null,          # ex : "Electrique", "Diesel"
       "id_ligne_officielle": int | null             # id_ligne de référence du véhicule
     },
     ...
@@ -100,6 +100,7 @@ Détails embarqués (sections potentiellement volumineuses) :
 - trafic : [
     {
       "id_trafic"       : int,
+      "horodatage"      : date,         # Date MongoDB (Date/Heure du trajet)
       "retard_minutes"  : int | null,
       "incidents" : [
         {
@@ -141,7 +142,7 @@ Mesures :
 - mesures : [
     {
       "id_mesure"   : int | null,
-      "horodatage"  : date | null,   # Date MongoDB
+      "horodatage"  : date | null,    # Date MongoDB
       "valeur"      : float | null,
       "unite"       : string | null  # ex : "ppm", "dB", "°C"
     },
@@ -202,7 +203,7 @@ Arrêts présents dans le quartier :
   * les quartiers, la géographie, le nombre d'arrêts par quartier,
   * les quartiers les plus bruyants / pollués,
   => utilise "collection": "quartiers"
-     (avec éventuellement un $lookup vers 'capteurs' si nécessaire)
+      (avec éventuellement un $lookup vers 'capteurs' si nécessaire)
 
 ------------------------------------------------------------
 3. RÈGLES D'OPTIMISATION (TRÈS IMPORTANTES)
@@ -233,9 +234,11 @@ Arrêts présents dans le quartier :
            * moyenne_retard_ligne = stats_trafic.moyenne_precalc
            * total_retard_global  = somme de stats_trafic.total_retard
            * nb_trajets_global    = somme de stats_trafic.nb_trajets
-       - n'utiliser 'trafic' (liste détaillée) que si :
-           * la question demande un détail par trajet,
-           * ou si on a besoin de filtrer sur les incidents de certains trajets.
+   - Si la question porte sur des **retards par date** ou **par trajet spécifique** :
+       - Utiliser 'lignes.trafic'.
+       - $unwind "$trafic".
+       - Utiliser "trafic.horodatage" pour filtrer ou grouper par date (ex: $year, $month, $day).
+       - Utiliser "trafic.retard_minutes" pour la valeur.
 
 4) CO2 :
    - Moyenne de CO2 par ligne :

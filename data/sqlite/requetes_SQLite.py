@@ -81,15 +81,17 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
         """,
 
         "F": """
-            SELECT DISTINCT L.nom_ligne 
-            FROM Ligne AS L 
-            JOIN Trafic AS T ON L.id_ligne = T.id_ligne 
+            SELECT 
+                L.nom_ligne AS "Ligne",
+                L.type AS "Type",
+                T.retard_minutes AS "Retard (min)",
+                T.horodatage AS "Date/Heure"
+            FROM Trafic T
+            JOIN Ligne L ON T.id_ligne = L.id_ligne
+            LEFT JOIN Incident I ON T.id_trafic = I.id_trafic
             WHERE T.retard_minutes > 10 
-            EXCEPT 
-            SELECT DISTINCT L.nom_ligne 
-            FROM Ligne AS L 
-            JOIN Trafic AS T ON L.id_ligne = T.id_ligne 
-            JOIN Incident AS I ON T.id_trafic = I.id_trafic;
+            AND I.id_incident IS NULL
+            ORDER BY T.retard_minutes DESC
         """,
 
         "G": """

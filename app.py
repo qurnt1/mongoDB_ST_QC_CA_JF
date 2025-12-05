@@ -536,6 +536,8 @@ def build_lignes_docs(
             if pd.isna(row["id_ligne"]):
                 continue
             tdoc: Dict[str, object] = {"id_trafic": int(row["id_trafic"])}
+            if pd.notnull(row.get("horodatage")):
+                tdoc["horodatage"] = row["horodatage"]
             if pd.notnull(row.get("retard_minutes")):
                 tdoc["retard_minutes"] = int(row["retard_minutes"])
             if row["id_trafic"] in incidents_by_trafic:
