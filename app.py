@@ -1868,33 +1868,33 @@ def render_partie_4_streamlit(tab) -> None:
             st.subheader("Densité (Arrêts par Arrondissement)")
             if not df_map_final.empty:
                 try:
-                    fig_map = px.choropleth_mapbox(
+                    fig_map = px.choropleth_map(
                         df_map_final,
                         geojson=geojson_data,
                         locations="join_id",
                         featureidkey=feature_key,
                         color="Densite_Arrets",   # Utilisation de la valeur réelle calculée
                         color_continuous_scale="Reds",
-                        mapbox_style="carto-positron",
+                        map_style="carto-positron",
                         zoom=10.5, center={"lat": 48.8566, "lon": 2.3522},
                         opacity=0.6,
                         title="Densité du Réseau"
                     )
                     fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0}, height=450)
-                    st.plotly_chart(fig_map, use_container_width=True)
+                    st.plotly_chart(fig_map, width="stretch")
                 except Exception as e: st.error(f"Erreur carte : {e}")
             else: st.info("Attente des données...")
 
         with c2:
             st.subheader("Localisation des Stations")
             if not df_a.empty:
-                fig_scat = px.scatter_mapbox(
+                fig_scat = px.scatter_map(
                     df_a, lat="lat", lon="lon", color="Type",
-                    mapbox_style="carto-positron", zoom=10.5, center={"lat": 48.8566, "lon": 2.3522},
+                    map_style="carto-positron", zoom=10.5, center={"lat": 48.8566, "lon": 2.3522},
                     title="Arrêts du Réseau"
                 )
                 fig_scat.update_layout(margin={"r":0,"t":30,"l":0,"b":0}, height=450)
-                st.plotly_chart(fig_scat, use_container_width=True)
+                st.plotly_chart(fig_scat, width="stretch")
             else: st.info("Pas de données GPS.")
 
         # === LIGNE 2 : PERFORMANCE ===
@@ -1904,13 +1904,13 @@ def render_partie_4_streamlit(tab) -> None:
             with c3:
                 fig = px.bar(df_l.sort_values("Freq", ascending=False).head(10), 
                              x="Freq", y="Ligne", orientation='h', color="Type", title="Top Fréquentation")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             with c4:
                 fig = px.box(df_l, x="Type", y="Retard", color="Type", title="Dispersion Retards")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             with c5:
                 fig = px.scatter(df_l, x="Freq", y="Retard", size="Total_Retard", color="Type", title="Charge vs Retard")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             # === LIGNE 3 : INCIDENTS (Rouge/Rose) ===
             st.markdown("### 3. Incidents & Flotte")
@@ -1937,7 +1937,7 @@ def render_partie_4_streamlit(tab) -> None:
                         category_orders={"Label": ["Critique", "Grave", "Important", "Passable", "Non important"]}
                     )
                     fig.update_traces(textinfo='percent+label')
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else: 
                     st.info("Aucun incident recensé.")
 
@@ -1945,7 +1945,7 @@ def render_partie_4_streamlit(tab) -> None:
                 st.subheader("Type de motorisation")
                 if not df_v.empty:
                     fig = px.sunburst(df_v, path=['Ligne', 'Moteur'], title="Parc Véhicules")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else: 
                     st.info("Aucune donnée véhicules.")
 
@@ -1957,7 +1957,7 @@ def render_partie_4_streamlit(tab) -> None:
                 if "CO2" in df_l.columns and df_l["CO2"].sum() > 0:
                     fig = px.bar(df_l.sort_values("CO2", ascending=False).head(10), 
                                  x="Ligne", y="CO2", color="Type", title="Top Émissions CO2")
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("Données CO2 manquantes.")
             
@@ -1969,7 +1969,7 @@ def render_partie_4_streamlit(tab) -> None:
                         text_auto='.0f', title="Bilan Carbone Global"
                     )
                     fig.update_layout(showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 else:
                     st.info("Données insuffisantes.")
 
@@ -2599,7 +2599,7 @@ def main() -> None:
             if st.button(
                 "🗑️ RÉINITIALISER L'APPLICATION",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not confirm_delete,
             ):
                 with st.spinner("Nettoyage complet en cours..."):
