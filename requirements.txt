@@ -4,3 +4,4 @@ streamlit
 groq
 python-dotenv
 plotly
+requests
