@@ -3,3 +3,4 @@ pymongo
 streamlit
 groq
 python-dotenv
+plotly
