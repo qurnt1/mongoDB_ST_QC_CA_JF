@@ -8,7 +8,7 @@ def aggregate_to_df(collection, pipeline: List[Dict]) -> pd.DataFrame:
     Exécute un pipeline d'agrégation MongoDB et renvoie le résultat
     sous forme de DataFrame.
     """
-    documents = list(collection.aggregate(pipeline))
+    documents = list(collection.aggregate(pipeline, allowDiskUse=True))
     if not documents:
         return pd.DataFrame()
     return pd.DataFrame(documents)
@@ -28,16 +28,13 @@ def query_A_mongo(db) -> pd.DataFrame:
     return df[["nom_ligne", "moyenne_retard_minutes"]] if not df.empty else df
 
 def query_B_mongo(db) -> pd.DataFrame:
-    # ... (Copie ici le corps de ta fonction query_B_mongo) ...
-    # Pour gagner de la place dans la réponse, je te laisse coller ton code exact ici
-    # Assure-toi juste que chaque fonction appelle aggregate_to_df défini plus haut.
-    # Ci-dessous, je remets le code exact que tu as fourni pour B à N :
     pipeline = [
         {"$unwind": "$arrets"},
         {"$unwind": "$arrets.horaires"},
         {
             "$project": {
                 "_id": 0,
+                "nom_ligne": 1,
                 "id_ligne": "$id_ligne",
                 "jour": {"$substrBytes": ["$arrets.horaires.heure_prevue", 0, 10]},
                 "passagers_estimes": "$arrets.horaires.passagers_estimes",
@@ -45,27 +42,28 @@ def query_B_mongo(db) -> pd.DataFrame:
         },
         {
             "$group": {
-                "_id": {"id_ligne": "$id_ligne", "jour": "$jour"},
+                "_id": {"id_ligne": "$id_ligne", "nom_ligne": "$nom_ligne", "jour": "$jour"},
                 "total_passagers_jour": {"$sum": "$passagers_estimes"},
             },
         },
         {
             "$group": {
-                "_id": "$_id.id_ligne",
+                "_id": {"id_ligne": "$_id.id_ligne", "nom_ligne": "$_id.nom_ligne"},
                 "moyenne_passagers_jour": {"$avg": "$total_passagers_jour"},
             },
         },
         {
             "$project": {
                 "_id": 0,
-                "id_ligne": "$_id",
+                "nom_ligne": "$_id.nom_ligne",
+                "id_ligne": "$_id.id_ligne",
                 "moyenne_passagers_jour": 1,
             },
         },
         {"$sort": {"moyenne_passagers_jour": -1}},
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    return df[["id_ligne", "moyenne_passagers_jour"]] if not df.empty else df
+    return df[["nom_ligne", "id_ligne", "moyenne_passagers_jour"]] if not df.empty else df
 
 def query_C_mongo(db) -> pd.DataFrame:
     pipeline = [
@@ -88,14 +86,12 @@ def query_C_mongo(db) -> pd.DataFrame:
 
 def query_D_mongo(db) -> pd.DataFrame:
     pipeline = [
-        {"$match": {"co2_moyen_ligne": {"$exists": True, "$ne": None}, "vehicules_cache": {"$exists": True, "$ne": []}}},
-        {"$project": {"vehicules_cache": 1, "co2_moyen_ligne": 1}},
-        {"$unwind": "$vehicules_cache"},
-        {"$project": {"_id": 0, "id_vehicule": "$vehicules_cache.id_vehicule", "immatriculation": "$vehicules_cache.immatriculation", "moyenne_co2": "$co2_moyen_ligne"}},
+        {"$match": {"co2_moyen_ligne": {"$exists": True, "$ne": None}}},
+        {"$project": {"_id": 0, "nom_ligne": 1, "moyenne_co2": "$co2_moyen_ligne"}},
         {"$sort": {"moyenne_co2": -1}},
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    return df[["id_vehicule", "immatriculation", "moyenne_co2"]] if not df.empty else pd.DataFrame(columns=["id_vehicule", "immatriculation", "moyenne_co2"])
+    return df[["nom_ligne", "moyenne_co2"]] if not df.empty else pd.DataFrame(columns=["nom_ligne", "moyenne_co2"])
 
 def query_E_mongo(db) -> pd.DataFrame:
     pipeline = [
@@ -142,7 +138,7 @@ def query_F_mongo(db) -> pd.DataFrame:
         }},
     ]
 
-    result = list(db.lignes.aggregate(pipeline))
+    result = list(db.lignes.aggregate(pipeline, allowDiskUse=True))
     return pd.DataFrame(result)
 
 
@@ -172,24 +168,26 @@ def query_H_mongo(db) -> pd.DataFrame:
 
 def query_I_mongo(db) -> pd.DataFrame:
     pipeline = [
-        {"$addFields": {"moyenne_retard": {"$cond": [{"$gt": [{"$size": {"$ifNull": ["$trafic", []]}}, 0]}, {"$avg": "$trafic.retard_minutes"}, 0]}}},
-        {"$lookup": {"from": "capteurs", "localField": "id_ligne", "foreignField": "arret.id_ligne", "as": "capteurs_ligne"}},
-        {"$addFields": {"mesures_co2": {"$reduce": {"input": "$capteurs_ligne", "initialValue": [], "in": {"$cond": [{"$eq": ["$$this.type_capteur", "CO2"]}, {"$concatArrays": ["$$value", {"$map": {"input": {"$ifNull": ["$$this.mesures", []]}, "as": "m", "in": "$$m.valeur"}}]}, "$$value"]}}}}},
-        {"$addFields": {"moyenne_co2": {"$cond": [{"$gt": [{"$size": "$mesures_co2"}, 0]}, {"$avg": "$mesures_co2"}, 0]}}},
-        {"$sort": {"nom_ligne": 1}},
-        {"$project": {"_id": 0, "nom_ligne": 1, "moyenne_retard": 1, "moyenne_co2": 1}}
+        {"$project": {
+            "nom_ligne": 1,
+            "moyenne_retard": {"$cond": [{"$gt": [{"$size": {"$ifNull": ["$trafic", []]}}, 0]}, {"$avg": "$trafic.retard_minutes"}, 0]},
+            "moyenne_co2": {"$ifNull": ["$co2_moyen_ligne", 0]}
+        }},
+        {"$addFields": {"correlation_status": {"$cond": [{"$and": [{"$gt": ["$moyenne_retard", 0]}, {"$gt": ["$moyenne_co2", 0]}]}, "Corrélation Positive", "Pas de Corrélation"]}}},
+        {"$sort": {"moyenne_retard": -1}},
+        {"$project": {"_id": 0, "nom_ligne": 1, "moyenne_retard": 1, "moyenne_co2": 1, "correlation_status": 1}}
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    return df[["nom_ligne", "moyenne_retard", "moyenne_co2"]] if not df.empty else df
+    return df[["nom_ligne", "moyenne_retard", "moyenne_co2", "correlation_status"]] if not df.empty else df
 
 def query_J_mongo(db) -> pd.DataFrame:
     pipeline = [
         {"$match": {"type_capteur": "Temperature"}},
         {"$unwind": "$mesures"},
         {"$group": {"_id": "$arret.id_ligne", "moyenne_temperature": {"$avg": "$mesures.valeur"}}},
+        {"$sort": {"moyenne_temperature": -1}},
         {"$lookup": {"from": "lignes", "localField": "_id", "foreignField": "id_ligne", "as": "ligne"}},
         {"$unwind": "$ligne"},
-        {"$sort": {"moyenne_temperature": -1}},
         {"$project": {"_id": 0, "nom_ligne": "$ligne.nom_ligne", "moyenne_temperature": 1}}
     ]
     df = aggregate_to_df(db.capteurs, pipeline)
@@ -216,7 +214,7 @@ def query_L_mongo(db) -> pd.DataFrame:
         {"$sort": {"pourcentage_electrique": -1}},
         {"$project": {"_id": 0, "nom_ligne": "$_id", "total_vehicules": 1, "nb_electriques": 1, "pourcentage_electrique": 1}}
     ]
-    docs = list(db.lignes.aggregate(pipeline))
+    docs = list(db.lignes.aggregate(pipeline, allowDiskUse=True))
     if not docs:
         return pd.DataFrame(columns=["nom_ligne", "total_vehicules", "nb_electriques", "pourcentage_electrique"])
     df = pd.DataFrame(docs)
@@ -236,12 +234,66 @@ def query_M_mongo(db) -> pd.DataFrame:
 
 def query_N_mongo(db) -> pd.DataFrame:
     pipeline = [
-        {"$addFields": {"categorie_frequentation": {"$switch": {"branches": [{"case": {"$gt": ["$frequentation_moyenne", 2000]}, "then": "Haute Fréquentation"}, {"case": {"$gt": ["$frequentation_moyenne", 1000]}, "then": "Moyenne Fréquentation"}], "default": "Basse Fréquentation"}}}},
-        {"$sort": {"frequentation_moyenne": -1}},
-        {"$project": {"_id": 0, "nom_ligne": 1, "type": 1, "frequentation_moyenne": 1, "categorie_frequentation": 1}}
+        # Calculer le nombre d'incidents par ligne
+        {"$addFields": {
+            "nb_incidents": {
+                "$size": {
+                    "$reduce": {
+                        "input": {"$ifNull": ["$trafic", []]},
+                        "initialValue": [],
+                        "in": {
+                            "$setUnion": [
+                                "$$value",
+                                {"$ifNull": ["$$this.incidents", []]}
+                            ]
+                        }
+                    }
+                }
+            },
+            # Calculer la moyenne de retard
+            "moyenne_retard_minutes": {
+                "$cond": [
+                    {"$gt": [{"$size": {"$ifNull": ["$trafic", []]}}, 0]},
+                    {"$avg": "$trafic.retard_minutes"},
+                    0
+                ]
+            },
+            # Compter les véhicules électriques
+            "nb_vehicules_electriques": {
+                "$size": {
+                    "$filter": {
+                        "input": {"$ifNull": ["$vehicules_cache", []]},
+                        "as": "v",
+                        "cond": {"$eq": ["$$v.type_vehicule", "Electrique"]}
+                    }
+                }
+            }
+        }},
+        # Ajouter la catégorie de performance
+        {"$addFields": {
+            "categorie_performance_ligne": {
+                "$switch": {
+                    "branches": [
+                        {"case": {"$gt": ["$moyenne_retard_minutes", 15]}, "then": "Ligne Critique"},
+                        {"case": {"$gt": ["$moyenne_retard_minutes", 5]}, "then": "Ligne Dégradée"}
+                    ],
+                    "default": "Ligne Normale"
+                }
+            }
+        }},
+        # Tri et projection
+        {"$sort": {"moyenne_retard_minutes": -1, "nom_ligne": 1}},
+        {"$project": {
+            "_id": 0,
+            "nom_ligne": 1,
+            "nb_incidents": 1,
+            "moyenne_retard_minutes": 1,
+            "categorie_performance_ligne": 1,
+            "nb_vehicules_electriques": 1
+        }}
     ]
     df = aggregate_to_df(db.lignes, pipeline)
-    return df[["nom_ligne", "type", "frequentation_moyenne", "categorie_frequentation"]] if not df.empty else df
+    return df[["nom_ligne", "nb_incidents", "moyenne_retard_minutes", "categorie_performance_ligne", "nb_vehicules_electriques"]] if not df.empty else df
 
 # --- Export des fonctions pour app.py ---
 

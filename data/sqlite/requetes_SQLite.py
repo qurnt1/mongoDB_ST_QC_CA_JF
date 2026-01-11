@@ -27,7 +27,7 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
         """,
 
         "B": """
-            SELECT L.id_ligne, AVG(T.total_passagers_jour) AS moyenne_passagers_jour 
+            SELECT L.nom_ligne, L.id_ligne, AVG(T.total_passagers_jour) AS moyenne_passagers_jour 
             FROM ( 
                 SELECT A.id_ligne, DATE(H.heure_prevue) AS jour, SUM(H.passagers_estimes) AS total_passagers_jour 
                 FROM Horaire AS H 
@@ -35,7 +35,7 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
                 GROUP BY A.id_ligne, jour 
             ) AS T 
             JOIN Ligne AS L ON T.id_ligne = L.id_ligne 
-            GROUP BY L.id_ligne 
+            GROUP BY L.id_ligne, L.nom_ligne 
             ORDER BY moyenne_passagers_jour DESC;
         """,
 
@@ -56,14 +56,13 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
         """,
 
         "D": """
-            SELECT V.id_vehicule, V.immatriculation, AVG(M.valeur) AS moyenne_co2 
-            FROM Vehicule AS V 
-            JOIN Ligne AS L ON V.id_ligne = L.id_ligne 
+            SELECT L.nom_ligne, AVG(M.valeur) AS moyenne_co2 
+            FROM Ligne AS L 
             JOIN Arret AS A ON L.id_ligne = A.id_ligne 
             JOIN Capteur AS C ON A.id_arret = C.id_arret 
             JOIN Mesure AS M ON C.id_capteur = M.id_capteur 
             WHERE C.type_capteur = 'CO2' 
-            GROUP BY V.id_vehicule, V.immatriculation 
+            GROUP BY L.nom_ligne 
             ORDER BY moyenne_co2 DESC;
         """,
 
@@ -115,27 +114,31 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
         """,
 
         "I": """
-            WITH AvgRetard AS ( 
+            WITH RetardParLigne AS ( 
                 SELECT id_ligne, AVG(retard_minutes) AS moyenne_retard 
                 FROM Trafic 
                 GROUP BY id_ligne 
             ), 
-            AvgCO2 AS ( 
+            CO2ParLigne AS ( 
                 SELECT A.id_ligne, AVG(M.valeur) AS moyenne_co2 
                 FROM Mesure AS M 
                 JOIN Capteur AS C ON M.id_capteur = C.id_capteur 
                 JOIN Arret AS A ON C.id_arret = A.id_arret 
                 WHERE C.type_capteur = 'CO2' 
                 GROUP BY A.id_ligne 
-            ) 
+            )
             SELECT 
                 L.nom_ligne, 
                 COALESCE(R.moyenne_retard, 0) AS moyenne_retard, 
-                COALESCE(C.moyenne_co2, 0) AS moyenne_co2 
+                COALESCE(C.moyenne_co2, 0) AS moyenne_co2,
+                CASE 
+                    WHEN R.moyenne_retard > 0 AND C.moyenne_co2 > 0 THEN 'Corrélation Positive'
+                    ELSE 'Pas de Corrélation'
+                END AS correlation_status
             FROM Ligne AS L 
-            LEFT JOIN AvgRetard AS R ON L.id_ligne = R.id_ligne 
-            LEFT JOIN AvgCO2 AS C ON L.id_ligne = C.id_ligne 
-            ORDER BY L.nom_ligne;
+            LEFT JOIN RetardParLigne AS R ON L.id_ligne = R.id_ligne 
+            LEFT JOIN CO2ParLigne AS C ON L.id_ligne = C.id_ligne 
+            ORDER BY moyenne_retard DESC;
         """,
 
         "J": """
@@ -190,17 +193,35 @@ def executer_requetes_sql_module() -> Dict[str, pd.DataFrame]:
         """,
 
         "N": """
-            SELECT 
-                nom_ligne, 
-                type, 
-                frequentation_moyenne, 
-                CASE 
-                    WHEN frequentation_moyenne > 2000 THEN 'Haute Fréquentation' 
-                    WHEN frequentation_moyenne > 1000 THEN 'Moyenne Fréquentation' 
-                    ELSE 'Basse Fréquentation' 
-                END AS categorie_frequentation 
-            FROM Ligne 
-            ORDER BY frequentation_moyenne DESC;
+            SELECT
+                L.nom_ligne,
+                COALESCE(inc.nb_incidents, 0) AS nb_incidents,
+                COALESCE(tr.moyenne_retard_minutes, 0) AS moyenne_retard_minutes,
+                CASE
+                    WHEN COALESCE(tr.moyenne_retard_minutes, 0) > 15 THEN 'Ligne Critique'
+                    WHEN COALESCE(tr.moyenne_retard_minutes, 0) > 5 THEN 'Ligne Dégradée'
+                    ELSE 'Ligne Normale'
+                END AS categorie_performance_ligne,
+                COALESCE(ve.nb_vehicules_electriques, 0) AS nb_vehicules_electriques
+            FROM Ligne AS L
+            LEFT JOIN (
+                SELECT id_ligne, AVG(retard_minutes) AS moyenne_retard_minutes
+                FROM Trafic
+                GROUP BY id_ligne
+            ) AS tr ON tr.id_ligne = L.id_ligne
+            LEFT JOIN (
+                SELECT T.id_ligne, COUNT(DISTINCT I.id_incident) AS nb_incidents
+                FROM Trafic AS T
+                JOIN Incident AS I ON T.id_trafic = I.id_trafic
+                GROUP BY T.id_ligne
+            ) AS inc ON inc.id_ligne = L.id_ligne
+            LEFT JOIN (
+                SELECT id_ligne,
+                       COUNT(DISTINCT CASE WHEN type_vehicule = 'Electrique' THEN id_vehicule END) AS nb_vehicules_electriques
+                FROM Vehicule
+                GROUP BY id_ligne
+            ) AS ve ON ve.id_ligne = L.id_ligne
+            ORDER BY COALESCE(tr.moyenne_retard_minutes, 0) DESC, L.nom_ligne ASC;
         """
     }
 
